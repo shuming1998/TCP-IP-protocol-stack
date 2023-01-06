@@ -20,9 +20,9 @@
 */
 #pragma pack(1) // 禁止编译器内存对齐的自动填充
 typedef struct etherHeader {
-  uint8_t destMac[NET_MAC_ADDR_SIZE];   // 目的 Mac 地址
-  uint8_t sourceMac[NET_MAC_ADDR_SIZE]; // 源 Mac 地址
-  uint16_t protocol;                    // 上层协议类型
+  uint8_t destMac[NET_MAC_ADDR_SIZE];     // 目的 Mac 地址
+  uint8_t sourceMac[NET_MAC_ADDR_SIZE];   // 源 Mac 地址
+  uint16_t protocol;                      // 上层协议类型
 }etherHeader;
 #pragma pack()
 
