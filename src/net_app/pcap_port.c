@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 static pcap_t *pcap;
+// const char *ipStr = "127.0.0.1";
 const char *ipStr = "192.168.2.101";
 const char selfMacAddr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
 
