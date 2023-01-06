@@ -38,9 +38,9 @@ typedef enum netErr {
 
 // 在网络中发送的数据包
 typedef struct NetDataPacket {
-  uint16_t size;                                  // 包中有效数据大小
-  uint8_t *data;                                  // 包中数据的起始地址
-  uint8_t payload[NET_DATA_CFG_PACKET_MAX_SIZE];  // 最大负载数据量
+  uint16_t size;                                    // 包中有效数据大小
+  uint8_t *data;                                    // 包中数据的起始地址
+  uint8_t payload[NET_DATA_CFG_PACKET_MAX_SIZE];    // 最大负载数据量
 }NetDataPacket;
 
 // 处理发送端数据包
