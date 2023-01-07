@@ -1,16 +1,28 @@
 #include "net_data.h"
 
-
 #define min(a, b) ((a) > (b) ? (b) : (a))
-
 #define convertOrder16(b) (((b) & 0XFF) << 8) | (((b) >> 8) & 0xFF)
 
-static uint8_t netifMac[NET_MAC_ADDR_SIZE]; // Network Interface Card Mac
+// 协议栈虚拟网卡 ip 地址
+static const IpAddr netifIpAddr = NET_CFG_NETIF_IP;
+// 无回报 ARP 广播地址
+static const uint8_t bcastEther[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+static uint8_t netifMac[NET_MAC_ADDR_SIZE]; // Network Interface Card Mac 地址
 
 static NetDataPacket sendPacket;
 static NetDataPacket recvPacket;
+static ArpEntry arpEntry;
 
-uint16_t solveEndian16(uint16_t protocol);
+uint16_t solveEndian16(uint16_t protocol)
+{
+	uint16_t a = 0x1234;
+	char b =  *(char *)&a;
+	if(b == 0x34) {
+		return convertOrder16(protocol);
+	}
+  return protocol;
+}
 
 // 发送端数据包：添加包头，向下传递
 NetDataPacket *netPacketAllocForSend(uint16_t dataSize) {
@@ -45,35 +57,38 @@ static void truncatePacket(NetDataPacket *packet, uint16_t size) {
 }
 
 // 初始化以太网
-static netErr initEthernet(void) {
+static NetErr initEthernet(void) {
   // 将源 Mac 地址写入本地变量
-  netErr err = netDriverOpen(netifMac);
+  NetErr err = netDriverOpen(netifMac);
   if (err < 0) {
     return err;
   }
-  return NET_ERROR_OK;
+
+  return arpMakeRequest(&netifIpAddr);
+  // return NET_ERROR_OK;
 }
 
 // 发送以太网包
-static netErr sendEthernetTo(netProtocol protocol, const uint8_t *destMac, NetDataPacket *packet) {
-  addHeader(packet, sizeof(etherHeader));                     // 添加以太网包头
+static NetErr sendEthernetTo(NetProtocol protocol, const uint8_t *destMac, NetDataPacket *packet) {
+  EtherHeader *etherHdr;
+  addHeader(packet, sizeof(EtherHeader));                     // 添加以太网包头
 
   // 开始填充以太网包字段
-  etherHeader *etherHdr = (etherHeader *)packet->data;
-  memcpy(etherHdr->destMac, destMac, NET_MAC_ADDR_SIZE);      // 填充目的 Mac 地址
+  etherHdr = (EtherHeader *)packet->data;
   memcpy(etherHdr->sourceMac, netifMac, NET_MAC_ADDR_SIZE);   // 填充源 Mac 地址
+  memcpy(etherHdr->destMac, destMac, NET_MAC_ADDR_SIZE);      // 填充目的 Mac 地址
   etherHdr->protocol = solveEndian16(protocol);               // 填充上层协议类型
-
   return netDriverSend(packet);
 }
 
 // 解析以太网包
 static void parseEthernet(NetDataPacket *packet) {
-  if (packet->size <= sizeof(etherHeader)) {
+  EtherHeader *etherHdr;
+  if (packet->size <= sizeof(EtherHeader)) {
     return;
   }
 
-  etherHeader *etherHdr = (etherHeader *)packet->data;
+  etherHdr = (EtherHeader *)packet->data;
   uint16_t protocol = solveEndian16(etherHdr->protocol);
 
   switch (protocol) {
@@ -96,20 +111,32 @@ static void queryEtherNet(void) {
   }
 }
 
+void initArp(void) {
+  arpEntry.state = ARP_ENTRY_FREE;
+}
+
+int arpMakeRequest(const IpAddr *ipAddr) {
+  BcastArpPacket *arpPacket;
+  NetDataPacket *packet = netPacketAllocForSend(sizeof(BcastArpPacket));
+
+  arpPacket = (BcastArpPacket *)packet->data;
+  arpPacket->hdwrType = ARP_HDWR_ETHER;
+  arpPacket->hdwrType = solveEndian16(NET_PROTOCOL_IP);
+  arpPacket->hdwrLen = NET_MAC_ADDR_SIZE;
+  arpPacket->proLen = NET_IPV4_ADDR_SIZE;
+  arpPacket->opcode = solveEndian16(ARP_REQUEST);
+  memcpy(arpPacket->senderMac, netifMac, NET_MAC_ADDR_SIZE);
+  memcpy(arpPacket->senderIp, netifIpAddr.array, NET_IPV4_ADDR_SIZE);
+  memset(arpPacket->targetMac, 0, NET_MAC_ADDR_SIZE);
+  memcpy(arpPacket->targetIp, ipAddr->array, NET_IPV4_ADDR_SIZE);
+  return sendEthernetTo(NET_PROTOCOL_ARP, bcastEther, packet);
+}
+
 void initNet(void) {
   initEthernet();
+  initArp();
 }
 
 void queryNet(void) {
   queryEtherNet();
-}
-
-uint16_t solveEndian16(uint16_t protocol)
-{
-	uint16_t a = 0x1234;
-	char b =  *(char *)&a;
-	if(b == 0x34) {
-		return convertOrder16(protocol);
-	}
-  return protocol;
 }

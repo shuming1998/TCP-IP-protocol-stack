@@ -3,8 +3,8 @@
 
 int main() {
   initNet();
-
-  printf("net running\n");
+  printf("net init success!\n");
+  printf("net running...\n");
   while (1) {
     queryNet();
   }
