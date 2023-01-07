@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 static pcap_t *pcap;
 // const char *ipStr = "127.0.0.1";
@@ -33,4 +34,9 @@ NetErr netDriverRead(NetDataPacket **packet) {
     return NET_ERROR_OK;
   }
   return NET_ERROR_IO;
+}
+
+// 获取程序从启动到目前为止的运行时长
+const net_time_t getNetRunsTime(void) {
+  return clock() / CLOCKS_PER_SEC;
 }

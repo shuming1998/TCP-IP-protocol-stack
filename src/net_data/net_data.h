@@ -2,17 +2,14 @@
 #define NET_DATA_H
 
 #include <stdint.h>
-#include <stdlib.h>
-#include <pcap.h>
-#include <string.h>
 
 #define NET_CFG_NETIF_IP              {192, 168, 2, 2}
-// 以太网 RFC894 Mac 地址字节大小
-#define NET_MAC_ADDR_SIZE             6
-#define NET_IPV4_ADDR_SIZE            4
-// 以太网每次最大发送数据量：2 字节 CRC + 1514 字节数据
-#define NET_DATA_CFG_PACKET_MAX_SIZE  1516
-
+#define NET_MAC_ADDR_SIZE             6     // 以太网 RFC894 Mac 地址字节大小
+#define NET_IPV4_ADDR_SIZE            4     // 以太网 Ipv4 地址字节大小
+#define NET_DATA_CFG_PACKET_MAX_SIZE  1516  // 以太网每次最大发送数据量：2 字节 CRC + 1514 字节数据
+#define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项有效时间(秒)
+#define ARP_CFG_ENTRY_PENDING_TTL     (1)   // 发送 arp 请求包后，接收 arp 响应包的最长响应时间(秒)
+#define ARP_CFG_MAX_RETRY_TIMES       4     // 尝试接收 arp 响应包失败后，最大重新请求次数
 /*
 以太网 RFC894 数据包格式(最大 1514B，不含 前导码/CRC 等字段)
 **************************************************************
@@ -83,8 +80,11 @@ typedef union IpAddr {
   uint32_t addr;
 }IpAddr;
 
-#define ARP_ENTRY_FREE  0
-#define ARP_ENTRY_OK    1
+// arp 表的状态
+#define ARP_ENTRY_FREE    0 // 已经释放
+#define ARP_ENTRY_OK      1 // arp 表正常
+#define ARP_ENTRY_PENDING 2 // 正在查询
+#define ARP_TIMER_PENDING 1 // 查询 arp 表的间隔时间
 
 // arp 表
 typedef struct ArpEntry {
@@ -95,12 +95,17 @@ typedef struct ArpEntry {
   uint8_t retryCnt;                     // 重试次数
 }ArpEntry;
 
+typedef uint32_t net_time_t;
+const net_time_t getNetRunsTime(void);
+
 // 初始化 arp 表
 void initArp(void);
 // 向网络发送 arp 请求包，如果 ip 填本机，就可实现无回报 arp 包的发送
 int arpMakeRequest(const IpAddr *ipAddr);
 // 处理接收到的 arp 包：检查包 => 处理请求/响应包 => arp 表项更新
 void parseRecvedArpPacket(NetDataPacket *packet);
+// 查询 arp 表
+void queryArpEntry(void);
 
 // 打开 pcap 设备接口的封装
 NetErr netDriverOpen(uint8_t *macAddr);

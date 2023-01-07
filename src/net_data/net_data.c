@@ -1,5 +1,9 @@
 #include "net_data.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #define min(a, b) ((a) > (b) ? (b) : (a))
 #define convertOrder16(b) ((((b) & 0XFF) << 8) | (((b) >> 8) & 0xFF))
 #define ipAddrIsEqualBuf(addr, buf) ((memcmp((addr)->array, (buf), (NET_IPV4_ADDR_SIZE))) == (0))
@@ -14,6 +18,27 @@ static uint8_t netifMac[NET_MAC_ADDR_SIZE]; // Network Interface Card Mac 地址
 static NetDataPacket sendPacket;
 static NetDataPacket recvPacket;
 static ArpEntry arpEntry;
+static net_time_t  arpTimer;
+
+// 判断此时是否应检查 arp 表
+int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
+  net_time_t curRunsTime = getNetRunsTime();
+
+  // 初始化时 sec 实参为 0
+  if (0 == sec) {
+    // 记录上次程序运行时间
+    *time = curRunsTime;
+    return 0;
+  // 检查超时时间，此时 sec 为间隔扫描时间： 1 秒
+  } else if (curRunsTime - *time >= sec) {
+    printf("time to get arp entry!\n");
+    // 记录上次程序运行时间
+    *time = curRunsTime;
+    return 1;
+  }
+
+  return 0;
+}
 
 uint16_t solveEndian16(uint16_t protocol)
 {
@@ -118,6 +143,9 @@ static void queryEtherNet(void) {
 
 void initArp(void) {
   arpEntry.state = ARP_ENTRY_FREE;
+
+  // 获取初始时间
+  checkArpEntryTtl(&arpTimer, 0);
 }
 
 int arpMakeRequest(const IpAddr *ipAddr) {
@@ -153,15 +181,19 @@ NetErr arpMakeResponse(ArpPacket *arpPacket) {
   return sendEthernetTo(NET_PROTOCOL_ARP, arpPacket->senderMac, packet);
 }
 
-// 更新 arp 表
+//  根据接收到的 arp 响应包，更新 arp 表项
 static void updateArpEntry(uint8_t *senderIp, uint8_t *senderMac) {
   memcpy(arpEntry.ipAddr.array, senderIp, NET_IPV4_ADDR_SIZE);
   memcpy(arpEntry.macAddr, senderMac, NET_MAC_ADDR_SIZE);
   arpEntry.state = ARP_ENTRY_OK;
+  arpEntry.ttl = ARP_CFG_ENTRY_OK_TTL;
+  arpEntry.retryCnt = ARP_CFG_MAX_RETRY_TIMES;
 }
 
 void parseRecvedArpPacket(NetDataPacket *packet) {
+  printf("=========parseRecvedArpPacket=========\n");
   if (packet->size >= sizeof(ArpPacket)) {
+    printf("=========packet->size 合法=========\n");
     ArpPacket *arpPacketIn = (ArpPacket *)packet->data;
     // 用于判断 arp 包类型：请求/响应？
     uint16_t opcode = solveEndian16(arpPacketIn->opcode);
@@ -172,25 +204,60 @@ void parseRecvedArpPacket(NetDataPacket *packet) {
         (solveEndian16(arpPacketIn->proType) != NET_PROTOCOL_IP) ||
         (arpPacketIn->proLen != NET_IPV4_ADDR_SIZE) ||
         ((opcode != ARP_REQUEST) && (opcode != ARP_REPLY))) {
+      printf("========= arp 字段不合法!!!=========\n");
       return;
     }
 
     // 检查 target ip ，确定对方的查询对象是自己
     if (!ipAddrIsEqualBuf(&netifIpAddr, arpPacketIn->targetIp)) {
+      printf("=========查询对象不是自己!!!=========\n");
       return;
     }
-
+    printf("=========switch (opcode)=========\n");
     switch (opcode) {
       // 处理请求包
       case ARP_REQUEST:
         arpMakeResponse(arpPacketIn);
         // 用源 Mac 和 ip 地址更新 arp 表项
+        printf("ARP_REQUEST 用源 Mac 和 ip 地址更新 arp 表项\n");
         updateArpEntry(arpPacketIn->senderIp, arpPacketIn->senderMac);
         break;
       // 处理响应包，只更新 arp 表
       case ARP_REPLY:
         // 用源 Mac 和 ip 地址更新 arp 表项
+        printf("ARP_REPLY 用源 Mac 和 ip 地址更新 arp 表项\n");
         updateArpEntry(arpPacketIn->senderIp, arpPacketIn->senderMac);
+        break;
+    }
+  }
+}
+
+void queryArpEntry() {
+  // 每隔一定时间才去查 arp 表项
+  if (checkArpEntryTtl(&arpTimer, ARP_TIMER_PENDING)) {
+    switch (arpEntry.state) {
+      // case ARP_ENTRY_FREE:
+      //   arpMakeRequest(&arpEntry.ipAddr);
+      //   break;
+      case ARP_ENTRY_OK:
+        if (0 == --arpEntry.ttl) {
+          printf("ok arpMakeRequest!\n");
+          arpMakeRequest(&arpEntry.ipAddr);         // arp 表项超时，重新获取该超时的 arp 表项
+          arpEntry.state = ARP_ENTRY_PENDING;       // 更新 arp 表项状态为：正在查询
+          arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL; // 设置 PENDING 状态的 arp 表项响应包的超时时间
+        }
+        break;
+      case ARP_ENTRY_PENDING:
+        if (0 == --arpEntry.ttl) {                  // 判断 PENDING 状态 arp 包的响应时间是否超时
+          if (0 == arpEntry.retryCnt--) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
+            arpEntry.state = ARP_ENTRY_FREE;
+          } else {                                  // 响应事件超时，且剩余请求次数，尝试重新获取 arp 响应包
+            printf("pending arpMakeRequest!\n");
+            arpMakeRequest(&arpEntry.ipAddr);
+            arpEntry.state = ARP_ENTRY_PENDING;
+            arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;
+          }
+        }
         break;
     }
   }
@@ -203,4 +270,5 @@ void initNet(void) {
 
 void queryNet(void) {
   queryEtherNet();
+  queryArpEntry();
 }
