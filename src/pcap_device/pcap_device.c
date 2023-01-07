@@ -319,7 +319,6 @@ uint32_t pcapDeviceRead(pcap_t *pcap, uint8_t *buffer, uint32_t length) {
   if (err == 0) {
     return 0;
   } else if (err == 1) { // 1 - 成功读取数据包, 0 - 没有数据包，其它值-出错
-    printf("%s %d: pcapDeviceRead %d", __FILE__, __LINE__, 1);
     memcpy(buffer, pkt_data, pkthdr->len);
     return pkthdr->len;
   }

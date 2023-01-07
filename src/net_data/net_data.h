@@ -33,10 +33,11 @@ typedef struct EtherHeader {
 #define ARP_HDWR_ETHER  0x1               // 以太网
 #define ARP_REQUEST     0X1               // ARP请求包
 #define ARP_REPLY       0X2               // ARP响应包
+#define ARP_RARP        0x3               // RARP包
 
 #pragma pack(1)
-// 无回报广播 arp 包
-typedef struct BcastArpPacket {
+// arp 包
+typedef struct ArpPacket {
   uint16_t hdwrType;                      // 硬件类型
   uint16_t proType;                       // 协议类型
   uint8_t hdwrLen;                        // 硬件地址长度
@@ -46,7 +47,7 @@ typedef struct BcastArpPacket {
   uint8_t senderIp[NET_IPV4_ADDR_SIZE];   // 发送方协议地址
   uint8_t targetMac[NET_MAC_ADDR_SIZE];   // 接收方硬件地址
   uint8_t targetIp[NET_IPV4_ADDR_SIZE];   // 接收方协议地址
-}BcastArpPacket;
+}ArpPacket;
 #pragma pack()
 
 typedef enum NetProtocol {
@@ -82,7 +83,8 @@ typedef union IpAddr {
   uint32_t addr;
 }IpAddr;
 
-#define ARP_ENTRY_FREE 0
+#define ARP_ENTRY_FREE  0
+#define ARP_ENTRY_OK    1
 
 // arp 表
 typedef struct ArpEntry {
@@ -95,9 +97,10 @@ typedef struct ArpEntry {
 
 // 初始化 arp 表
 void initArp(void);
-
 // 向网络发送 arp 请求包，如果 ip 填本机，就可实现无回报 arp 包的发送
 int arpMakeRequest(const IpAddr *ipAddr);
+// 处理接收到的 arp 包：检查包 => 处理请求/响应包 => arp 表项更新
+void parseRecvedArpPacket(NetDataPacket *packet);
 
 // 打开 pcap 设备接口的封装
 NetErr netDriverOpen(uint8_t *macAddr);
