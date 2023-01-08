@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define NET_CFG_NETIF_IP              { 192, 168, 2, 105 }
-#define NET_CFG_DATA_PACKET_MAX_SIZE  1516  // 以太网每次最大发送数据量：2 字节 CRC + 1514 字节数据
+#define NET_CFG_NETIF_IP              { 192, 168, 2, 3 }
+#define NET_CFG_DATA_PACKET_MAX_SIZE  1518  // 以太网每次最大发送数据量：4 字节 CRC + 1514 字节数据
 #define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项超时时间(秒)
 #define ARP_CFG_ENTRY_PENDING_TTL     (1)   // arp 表项 PENDING 超时时间(秒)
 #define ARP_CFG_MAX_RETRY_TIMES       4     // arp 表项 PENDING 状态下请求次数
@@ -27,7 +27,6 @@ typedef struct EtherHeader {
   uint16_t protocol;                      // 上层协议类型
 }EtherHeader;
 #pragma pack()
-
 
 #define ARP_HDWR_ETHER  0x1               // 以太网
 #define ARP_REQUEST     0X1               // ARP请求包
@@ -52,6 +51,7 @@ typedef struct ArpPacket {
 typedef enum NetProtocol {
   NET_PROTOCOL_IP = 0x0800,
   NET_PROTOCOL_ARP = 0x0806,
+  NET_PROTOCOL_ICMP = 1,
 }NetProtocol;
 
 typedef enum NetErr {
@@ -111,7 +111,7 @@ void queryArpEntry(void);
 NetErr arpResolve(const IpAddr *ipAddr, uint8_t **macAddr);
 
 
-//=============ip=============//
+//=============IP begin=============//
 #define NET_VERSION_IPV4  4
 #define NET_IP_PACKET_TTL 64
 #pragma pack(1)
@@ -133,10 +133,32 @@ typedef struct IpHeader {
 
 // 初始化 ip
 void initIp(void);
-// 处理输入 ip 数据包
+// 处理输入的 ip 数据包
 void parseRecvedIpPacket(NetPacket *packet);
 // 发送 ip 数据包
 NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet);
+//=============IP end=============//
+
+//=============ICMP begin=============//
+#define ICMP_CODE_ECHO_REQUEST  8
+#define ICMP_CODE_ECHO_REPLY    0
+
+#pragma pack(1)
+// ICMP 包头
+typedef struct IcmpHeader {
+  uint8_t type;                         // icmp 包类型  Echo(ping) request
+  uint8_t code;                         // 对于 Echo, 固定为 0
+  uint16_t checksum;                    // icmp 报文校验和
+  uint16_t id;                          // icmp 报文标识符
+  uint16_t seq;                         // icmp 报文序号   id + seq 可唯一对应一条 request/reply
+}IcmpHeader;
+#pragma pack()
+
+// 初始化 icmp
+void initIcmp(void);
+// 处理输入的 icmp 数据包
+void parseRecvedIcmpPacket(IpAddr *sourceIp, NetPacket *packet);
+//=============ICMP end=============//
 
 
 // 打开 pcap 设备接口的封装

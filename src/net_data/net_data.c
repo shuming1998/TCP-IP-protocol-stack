@@ -8,6 +8,7 @@
 #define convertOrder16(b) ((((b) & 0XFF) << 8) | (((b) >> 8) & 0xFF))
 #define ipAddrIsEqualBuf(addr, buf) (memcmp((addr)->array, (buf), NET_IPV4_ADDR_SIZE) == 0)
 #define ipAddrIsEqual(addrLhs, addrRhs) ((addrLhs)->addr == (addrRhs)->addr)
+#define getIpFromBuf(dest, buf) ((dest)->addr = *(uint32_t *)(buf))
 
 // 协议栈虚拟网卡 ip 地址
 static const IpAddr netifIpAddr = NET_CFG_NETIF_IP;
@@ -40,8 +41,7 @@ int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
 }
 
 // 本地字节序转网络字节序
-uint16_t solveEndian16(uint16_t protocol)
-{
+uint16_t solveEndian16(uint16_t protocol) {
 	uint16_t a = 0x1234;
 	char b =  *(char *)&a;
 	if(b == 0x34) {
@@ -102,8 +102,8 @@ static NetErr sendEthernetTo(NetProtocol protocol, const uint8_t *destMac, NetPa
   etherHdr = (EtherHeader *)packet->data;                     // 填充以太网包字段
   memcpy(etherHdr->destMac, destMac, NET_MAC_ADDR_SIZE);      // 填充目的 Mac 地址
   memcpy(etherHdr->sourceMac, netifMac, NET_MAC_ADDR_SIZE);   // 填充源 Mac 地址
-  etherHdr->protocol = solveEndian16(protocol);               // 填充上层协议类型
 
+  etherHdr->protocol = solveEndian16(protocol);               // 填充上层协议类型
   return netDriverSend(packet);
 }
 
@@ -122,7 +122,6 @@ static NetErr sendByEthernet(IpAddr *destIp, NetPacket *packet) {
 
 // 解析以太网包
 static void parseEthernet(NetPacket *packet) {
-  printf("recv ethernet packet!\n");
   if (packet->size <= sizeof(EtherHeader)) {
     printf("packet->size <= sizeof(EtherHeader)!\n");
     return;
@@ -140,9 +139,6 @@ static void parseEthernet(NetPacket *packet) {
       printf("NET_PROTOCOL_IP\n");
       removeHeader(packet, sizeof(EtherHeader));  // 移除以太网包头
       parseRecvedIpPacket(packet);                // 解析 ip 包
-      break;
-    default:
-      printf("ping...\n");
       break;
   }
 }
@@ -206,7 +202,7 @@ NetErr arpResolve(const IpAddr *ipAddr, uint8_t **macAddr) {
   }
 
   arpMakeRequest(ipAddr);
-  return NET_ERROR_IO;
+  return NET_ERROR_NONE;
 }
 
 //  根据接收到的 arp 响应包，更新 arp 表项
@@ -238,7 +234,7 @@ void parseRecvedArpPacket(NetPacket *packet) {
       printf("arp packet targetIp != netifIpAddr!\n");
       return;
     }
-    printf("arp packet targetIp == netifIpAddr!\n");
+
     switch (opcode) {
       // 处理请求包
       case ARP_REQUEST:
@@ -259,9 +255,6 @@ void queryArpEntry() {
   // 每隔一定时间才去查 arp 表项
   if (checkArpEntryTtl(&arpTimer, ARP_TIMER_PERIOD)) {
     switch (arpEntry.state) {
-      // case ARP_ENTRY_FREE:
-      //   arpMakeRequest(&arpEntry.ipAddr);
-      //   break;
       case ARP_ENTRY_OK:
         if (0 == --arpEntry.ttl) {
           arpMakeRequest(&arpEntry.ipAddr);         // arp 表项超时，重新获取该超时的 arp 表项
@@ -302,22 +295,20 @@ static uint16_t checksum16(uint16_t *buf, uint16_t len, uint16_t preSum, int com
 
   // 若和的高 16bit != 0，将和的高 16bit 和低 16bit 反复相加，直到高 16bit = 0，获得一个16bit的值
   while ((high = checksum >> 16) != 0) {
-    checksum = high + (checksum & 0XFFFF);
+    checksum = high + (checksum & 0Xffff);
   }
 
   // 校验和取反
-  return (uint16_t)~checksum;
+  return complement ? (uint16_t)~checksum : (uint16_t)checksum;
 }
 
-void initIp(void) {
-
-}
+void initIp(void) {}
 
 void parseRecvedIpPacket(NetPacket *packet) {
   IpHeader *ipHdr = (IpHeader *)packet->data;
-  uint32_t headerSize;
-  uint32_t totalSize;
+  uint32_t headerSize, totalSize;
   uint16_t preChecksum;
+  IpAddr sourceIp;
 
   printf("check ip packet version!\n");
   if (ipHdr->version != NET_VERSION_IPV4) {
@@ -327,7 +318,7 @@ void parseRecvedIpPacket(NetPacket *packet) {
 
   headerSize = ipHdr->headerLen * 4;
   totalSize = solveEndian16(ipHdr->totalLen);
-  if ((headerSize < sizeof(IpHeader)) || (totalSize < headerSize)) {
+  if ((headerSize < sizeof(IpHeader)) || (totalSize < headerSize) || (packet->size < totalSize)) {
     printf("invalid ip packet size!\n");
     return;
   }
@@ -339,15 +330,23 @@ void parseRecvedIpPacket(NetPacket *packet) {
     return;
   }
 
+  //ipHdr->hdrChecksum = preChecksum;
+
   printf("check ip packet dest ip addr!\n");
-  // 检查 ip 数据包是否是发送给自己的
-  if (ipAddrIsEqualBuf(&netifIpAddr, ipHdr->destIp)) {
+  // 只处理发送给自己的 ip 数据包
+  if (!ipAddrIsEqualBuf(&netifIpAddr, ipHdr->destIp)) {
     return;
   }
-  printf("check ip packet protocol!\n");
+
+  // 从包头中提取 sourceIp
+  getIpFromBuf(&sourceIp, ipHdr->sourceIp);
+  printf("ipHdr->protocol: %d", ipHdr->protocol);
   switch (ipHdr->protocol) {
-    // case ICMP:
-    //   break;
+    case NET_PROTOCOL_ICMP:
+      printf("NET_PROTOCOL_ICMP\n");
+      removeHeader(packet, headerSize);
+      parseRecvedIcmpPacket(&sourceIp, packet);
+      break;
     default:
       break;
   }
@@ -378,10 +377,41 @@ NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet) {
   return sendByEthernet(destIp, packet);
 }
 
+
+void initIcmp(void) {}
+
+static NetErr replyIcmpRequest(IcmpHeader *icmpHdr, IpAddr *sourceIp, NetPacket *packet) {
+  // icmp 响应包的大小和请求包的大小相同
+  NetPacket *respPkt = netPacketAllocForSend(packet->size);
+
+  IcmpHeader *icmpReplyHdr = (IcmpHeader *)respPkt->data;
+  icmpReplyHdr->type = ICMP_CODE_ECHO_REPLY;
+  icmpReplyHdr->code = 0;
+  icmpReplyHdr->checksum = 0;
+  icmpReplyHdr->id = icmpHdr->id;
+  icmpReplyHdr->seq = icmpHdr->seq;
+  // 拷贝 icmp 数据段
+  memcpy((uint8_t *)icmpReplyHdr + sizeof(IcmpHeader),
+         (uint8_t *)icmpHdr + sizeof(IcmpHeader),
+         packet->size - sizeof(IcmpHeader));
+  icmpReplyHdr->checksum = checksum16((uint16_t *)icmpReplyHdr, respPkt->size, 0, 1);
+
+  return sendIpPacketTo(NET_PROTOCOL_ICMP, sourceIp, respPkt);
+}
+
+void parseRecvedIcmpPacket(IpAddr *sourceIp, NetPacket *packet) {
+  IcmpHeader *icmpHeader = (IcmpHeader *)packet->data;
+
+  if ((packet->size >= sizeof(IcmpHeader)) && (icmpHeader->type == ICMP_CODE_ECHO_REQUEST)) {
+    replyIcmpRequest(icmpHeader, sourceIp, packet);
+  }
+}
+
 void initNet(void) {
   initEthernet();
   initArp();
   initIp();
+  initIcmp();
 }
 
 void queryNet(void) {

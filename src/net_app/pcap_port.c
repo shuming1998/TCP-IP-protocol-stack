@@ -6,14 +6,13 @@
 #include <time.h>
 
 static pcap_t *pcap;
-// const char *ipStr = "127.0.0.1";
 const char *ipStr = "192.168.2.101";
-const char selfMacAddr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+const char selfMacAddr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
 
 // 由驱动将 mac 地址写入
 NetErr netDriverOpen(uint8_t *macAddr) {
   memcpy(macAddr, selfMacAddr, sizeof(selfMacAddr));
-  pcap = pcapDeviceOpen(ipStr, selfMacAddr, 1);
+  pcap = pcapDeviceOpen(ipStr, macAddr, 1);
   // 判断驱动是否打开失败
   if ((pcap_t *)0 == pcap) {
     exit(-1);
@@ -33,9 +32,10 @@ NetErr netDriverRead(NetPacket **packet) {
     *packet = readPacket;
     return NET_ERROR_OK;
   }
+
   return NET_ERROR_IO;
 }
 
 const net_time_t getNetRunsTime(void) {
-  return clock() / CLOCKS_PER_SEC;
+  return (net_time_t)(clock() / CLOCKS_PER_SEC);
 }
