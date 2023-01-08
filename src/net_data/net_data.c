@@ -7,6 +7,7 @@
 #define min(a, b) ((a) > (b) ? (b) : (a))
 #define convertOrder16(b) ((((b) & 0XFF) << 8) | (((b) >> 8) & 0xFF))
 #define ipAddrIsEqualBuf(addr, buf) (memcmp((addr)->array, (buf), NET_IPV4_ADDR_SIZE) == 0)
+#define ipAddrIsEqual(addrLhs, addrRhs) ((addrLhs)->addr == (addrRhs)->addr)
 
 // 协议栈虚拟网卡 ip 地址
 static const IpAddr netifIpAddr = NET_CFG_NETIF_IP;
@@ -106,6 +107,19 @@ static NetErr sendEthernetTo(NetProtocol protocol, const uint8_t *destMac, NetPa
   return netDriverSend(packet);
 }
 
+// 通过以太网发送 ip 数据包
+static NetErr sendByEthernet(IpAddr *destIp, NetPacket *packet) {
+  // 通过 arp 将 ip 地址转换为 mac 地址
+  NetErr err;
+  uint8_t *macAddr;
+
+  if ((err = arpResolve(destIp, &macAddr)) == NET_ERROR_OK) {
+    return sendEthernetTo(NET_PROTOCOL_IP, macAddr, packet);
+  }
+
+  return err;
+}
+
 // 解析以太网包
 static void parseEthernet(NetPacket *packet) {
   printf("recv ethernet packet!\n");
@@ -183,6 +197,16 @@ NetErr arpMakeResponse(ArpPacket *arpPacket) {
 
   // arpPacket->senderMac
   return sendEthernetTo(NET_PROTOCOL_ARP, bcastEther, packet);
+}
+
+NetErr arpResolve(const IpAddr *ipAddr, uint8_t **macAddr) {
+  if ((arpEntry.state == ARP_ENTRY_OK) && ipAddrIsEqual(ipAddr, &arpEntry.ipAddr)) {
+    *macAddr = arpEntry.macAddr;
+    return NET_ERROR_OK;
+  }
+
+  arpMakeRequest(ipAddr);
+  return NET_ERROR_IO;
 }
 
 //  根据接收到的 arp 响应包，更新 arp 表项
@@ -327,6 +351,31 @@ void parseRecvedIpPacket(NetPacket *packet) {
     default:
       break;
   }
+}
+
+NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet) {
+  static uint32_t ipPacketId = 0;
+  IpHeader *ipHdr;
+
+  // 设置 ip 数据包头部
+  addHeader(packet, sizeof(IpHeader));
+  ipHdr = (IpHeader *)packet->data;
+  ipHdr->version = NET_VERSION_IPV4;
+  ipHdr->headerLen = sizeof(IpHeader) / 4;
+  ipHdr->tos = 0;
+  ipHdr->totalLen = solveEndian16(packet->size);
+  ipHdr->id = solveEndian16(ipPacketId);
+  ipHdr->flagsFragment = 0;
+  ipHdr->ttl = NET_IP_PACKET_TTL;
+  ipHdr->protocol = protocol;
+  memcpy(ipHdr->sourceIp, netifIpAddr.array, NET_IPV4_ADDR_SIZE);
+  memcpy(ipHdr->destIp, destIp->array, NET_IPV4_ADDR_SIZE);
+  ipHdr->hdrChecksum = 0; // 计算校验和之前必须先置为 0
+  ipHdr->hdrChecksum = checksum16((uint16_t *)ipHdr, sizeof(IpHeader), 0, 1);
+
+  ++ipPacketId;
+
+  return sendByEthernet(destIp, packet);
 }
 
 void initNet(void) {

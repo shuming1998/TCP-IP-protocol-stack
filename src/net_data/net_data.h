@@ -57,6 +57,7 @@ typedef enum NetProtocol {
 typedef enum NetErr {
   NET_ERROR_OK = 0,
   NET_ERROR_IO = -1,
+  NET_ERROR_NONE = -2,
 }NetErr;
 
 // 在网络中发送的数据包
@@ -106,10 +107,13 @@ NetErr arpMakeRequest(const IpAddr *ipAddr);
 void parseRecvedArpPacket(NetPacket *packet);
 // 查询 arp 表
 void queryArpEntry(void);
+// 通过 arp 解析将 ipAddr 对应的 Mac 地址读入到 macAddr
+NetErr arpResolve(const IpAddr *ipAddr, uint8_t **macAddr);
 
 
 //=============ip=============//
-#define NET_VERSION_IPV4 4
+#define NET_VERSION_IPV4  4
+#define NET_IP_PACKET_TTL 64
 #pragma pack(1)
 // ip 数据包头
 typedef struct IpHeader {
@@ -131,7 +135,8 @@ typedef struct IpHeader {
 void initIp(void);
 // 处理输入 ip 数据包
 void parseRecvedIpPacket(NetPacket *packet);
-
+// 发送 ip 数据包
+NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet);
 
 
 // 打开 pcap 设备接口的封装
