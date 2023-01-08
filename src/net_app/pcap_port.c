@@ -21,13 +21,13 @@ NetErr netDriverOpen(uint8_t *macAddr) {
   return NET_ERROR_OK;
 }
 
-NetErr netDriverSend(NetDataPacket *packet) {
+NetErr netDriverSend(NetPacket *packet) {
   return pcapDeviceSend(pcap, packet->data, packet->size);
 }
 
-NetErr netDriverRead(NetDataPacket **packet) {
-  NetDataPacket *readPacket = netPacketAllocForRead(NET_DATA_CFG_PACKET_MAX_SIZE);
-  uint16_t size = pcapDeviceRead(pcap, readPacket->data, NET_DATA_CFG_PACKET_MAX_SIZE);
+NetErr netDriverRead(NetPacket **packet) {
+  NetPacket *readPacket = netPacketAllocForRead(NET_CFG_DATA_PACKET_MAX_SIZE);
+  uint16_t size = pcapDeviceRead(pcap, readPacket->data, NET_CFG_DATA_PACKET_MAX_SIZE);
   if (size > 0) {
     readPacket->size = size;
     *packet = readPacket;
@@ -36,7 +36,6 @@ NetErr netDriverRead(NetDataPacket **packet) {
   return NET_ERROR_IO;
 }
 
-// 获取程序从启动到目前为止的运行时长
 const net_time_t getNetRunsTime(void) {
   return clock() / CLOCKS_PER_SEC;
 }

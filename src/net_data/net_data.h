@@ -3,13 +3,15 @@
 
 #include <stdint.h>
 
-#define NET_CFG_NETIF_IP              {192, 168, 2, 2}
+#define NET_CFG_NETIF_IP              { 192, 168, 2, 105 }
+#define NET_CFG_DATA_PACKET_MAX_SIZE  1516  // 以太网每次最大发送数据量：2 字节 CRC + 1514 字节数据
+#define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项超时时间(秒)
+#define ARP_CFG_ENTRY_PENDING_TTL     (1)   // arp 表项 PENDING 超时时间(秒)
+#define ARP_CFG_MAX_RETRY_TIMES       4     // arp 表项 PENDING 状态下请求次数
+
 #define NET_MAC_ADDR_SIZE             6     // 以太网 RFC894 Mac 地址字节大小
 #define NET_IPV4_ADDR_SIZE            4     // 以太网 Ipv4 地址字节大小
-#define NET_DATA_CFG_PACKET_MAX_SIZE  1516  // 以太网每次最大发送数据量：2 字节 CRC + 1514 字节数据
-#define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项有效时间(秒)
-#define ARP_CFG_ENTRY_PENDING_TTL     (1)   // 发送 arp 请求包后，接收 arp 响应包的最长响应时间(秒)
-#define ARP_CFG_MAX_RETRY_TIMES       4     // 尝试接收 arp 响应包失败后，最大重新请求次数
+
 /*
 以太网 RFC894 数据包格式(最大 1514B，不含 前导码/CRC 等字段)
 **************************************************************
@@ -58,21 +60,16 @@ typedef enum NetErr {
 }NetErr;
 
 // 在网络中发送的数据包
-typedef struct NetDataPacket {
+typedef struct NetPacket {
   uint16_t size;                                    // 包中有效数据大小
   uint8_t *data;                                    // 包中数据的起始地址
-  uint8_t payload[NET_DATA_CFG_PACKET_MAX_SIZE];    // 最大负载数据量
-}NetDataPacket;
+  uint8_t payload[NET_CFG_DATA_PACKET_MAX_SIZE];    // 最大负载数据量
+}NetPacket;
 
 // 处理发送端数据包
-NetDataPacket *netPacketAllocForSend(uint16_t dataSize);
+NetPacket *netPacketAllocForSend(uint16_t dataSize);
 // 处理接收端数据包
-NetDataPacket *netPacketAllocForRead(uint16_t dataSize);
-
-// 初始化协议栈
-void initNet(void);
-// 查询协议栈
-void queryNet(void);
+NetPacket *netPacketAllocForRead(uint16_t dataSize);
 
 // ip 地址
 typedef union IpAddr {
@@ -80,38 +77,73 @@ typedef union IpAddr {
   uint32_t addr;
 }IpAddr;
 
-// arp 表的状态
-#define ARP_ENTRY_FREE    0 // 已经释放
-#define ARP_ENTRY_OK      1 // arp 表正常
-#define ARP_ENTRY_PENDING 2 // 正在查询
-#define ARP_TIMER_PENDING 1 // 查询 arp 表的间隔时间
+// arp 表项状态
+#define ARP_ENTRY_FREE    0 // arp 表项空闲
+#define ARP_ENTRY_OK      1 // arp 表项解析成功
+#define ARP_ENTRY_PENDING 2 // arp 表项正在解析
+#define ARP_TIMER_PERIOD  1 // arp 表项扫描周期
 
 // arp 表
 typedef struct ArpEntry {
   IpAddr ipAddr;                        // ip 地址
   uint8_t macAddr[NET_MAC_ADDR_SIZE];   // Mac 地址
   uint8_t state;                        // 当前状态 有效/无效/请求中
-  uint16_t ttl;                         // 超时/剩余生存时间
-  uint8_t retryCnt;                     // 重试次数
+  uint16_t ttl;                         // 当前超时时间
+  uint8_t retryCnt;                     // 当前重试次数
 }ArpEntry;
 
-typedef uint32_t net_time_t;
+typedef uint32_t net_time_t;            // 当前运行时长
+// 获取程序从启动到目前为止的运行时长
 const net_time_t getNetRunsTime(void);
+// 判断此时是否应检查 arp 表
+int checkArpEntryTtl(net_time_t *time, uint32_t sec);
 
 // 初始化 arp 表
 void initArp(void);
 // 向网络发送 arp 请求包，如果 ip 填本机，就可实现无回报 arp 包的发送
-int arpMakeRequest(const IpAddr *ipAddr);
+NetErr arpMakeRequest(const IpAddr *ipAddr);
 // 处理接收到的 arp 包：检查包 => 处理请求/响应包 => arp 表项更新
-void parseRecvedArpPacket(NetDataPacket *packet);
+void parseRecvedArpPacket(NetPacket *packet);
 // 查询 arp 表
 void queryArpEntry(void);
+
+
+//=============ip=============//
+#define NET_VERSION_IPV4 4
+#pragma pack(1)
+// ip 数据包头
+typedef struct IpHeader {
+  uint8_t headerLen : 4;                // 头部长度，第一个字节的低四位
+  uint8_t version : 4;                  // 版本，第一个字节的高四位
+  uint8_t tos;                          // 服务类型
+  uint16_t totalLen;                    // 总长度
+  uint16_t id;                          // 数据包 id
+  uint16_t flagsFragment;               // 3 位标志位 & 13 位分片偏移
+  uint8_t ttl;                          // 生存时间
+  uint8_t protocol;                     // 上层协议类型
+  uint16_t hdrChecksum;                 // 校验和
+  uint8_t sourceIp[NET_IPV4_ADDR_SIZE]; // 源 ip 地址
+  uint8_t destIp[NET_IPV4_ADDR_SIZE];   // 目的 ip 地址
+}IpHeader;
+#pragma pack()
+
+// 初始化 ip
+void initIp(void);
+// 处理输入 ip 数据包
+void parseRecvedIpPacket(NetPacket *packet);
+
+
 
 // 打开 pcap 设备接口的封装
 NetErr netDriverOpen(uint8_t *macAddr);
 // 向网络接口发送数据包的封装
-NetErr netDriverSend(NetDataPacket *packet);
+NetErr netDriverSend(NetPacket *packet);
 // 从网络接口读取数据包的封装
-NetErr netDriverRead(NetDataPacket **packet);
+NetErr netDriverRead(NetPacket **packet);
+
+// 初始化协议栈
+void initNet(void);
+// 查询协议栈
+void queryNet(void);
 
 #endif
