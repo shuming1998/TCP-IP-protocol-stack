@@ -2,6 +2,7 @@
 #define NET_DATA_H
 
 #include <stdint.h>
+#include <time.h>
 
 #define NET_CFG_NETIF_IP              { 192, 168, 1, 8 }
 #define NET_CFG_DATA_PACKET_MAX_SIZE  1518  // 以太网每次最大发送数据量：4 字节 CRC + 1514 字节数据

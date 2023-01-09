@@ -23,6 +23,10 @@ static ArpEntry arpEntry;                       // arp 单表项
 static net_time_t  arpTimer;                    // arp 定时查询时间
 static UdpBlk udpSocket[UDP_CFG_MAX_UDP];
 
+const net_time_t getNetRunsTime(void) {
+  return (net_time_t)(clock() / CLOCKS_PER_SEC);
+}
+
 //  根据接收到的 arp 响应包，更新 arp 表项
 static void updateArpEntry(uint8_t *senderIp, uint8_t *senderMac);
 
@@ -33,7 +37,6 @@ void truncatePacket(NetPacket *packet, uint16_t size) {
 
 int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
   net_time_t curRunsTime = getNetRunsTime();
-
   // 初始化时 sec 实参为 0
   if (0 == sec) {
     // 记录上次程序运行时间
@@ -213,6 +216,7 @@ NetErr arpResolve(const IpAddr *ipAddr, uint8_t **macAddr) {
 }
 
 static void updateArpEntry(uint8_t *senderIp, uint8_t *senderMac) {
+  printf("updateArpEntry!\n");
   memcpy(arpEntry.ipAddr.array, senderIp, NET_IPV4_ADDR_SIZE);
   memcpy(arpEntry.macAddr, senderMac, NET_MAC_ADDR_SIZE);
   arpEntry.state = ARP_ENTRY_OK;
@@ -260,9 +264,17 @@ void parseRecvedArpPacket(NetPacket *packet) {
 void queryArpEntry() {
   // 每隔一定时间才去查 arp 表项
   if (checkArpEntryTtl(&arpTimer, ARP_TIMER_PERIOD)) {
+    printf("time to query arp: %d\n", arpTimer);
     switch (arpEntry.state) {
+      case ARP_ENTRY_FREE:
+        arpMakeRequest(&arpEntry.ipAddr);
+        arpEntry.state = ARP_ENTRY_OK;
+        arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;
+        arpEntry.retryCnt = ARP_CFG_MAX_RETRY_TIMES;
+        break;
       case ARP_ENTRY_OK:
         if (--arpEntry.ttl == 0) {
+          printf("ARP OK: arpEntry.ttl = %d\n", arpEntry.ttl);
           arpMakeRequest(&arpEntry.ipAddr);         // arp 表项超时，重新获取该超时的 arp 表项
           arpEntry.state = ARP_ENTRY_PENDING;       // 更新 arp 表项状态为：正在查询
           arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL; // 设置 PENDING 状态的 arp 表项响应包的超时时间
@@ -270,9 +282,12 @@ void queryArpEntry() {
         break;
       case ARP_ENTRY_PENDING:
         if (--arpEntry.ttl == 0) {                  // 判断 PENDING 状态 arp 包的响应时间是否超时
+          printf("ARP_ENTRY_PENDING: arpEntry.ttl = %d!\n", arpEntry.ttl);
           if (arpEntry.retryCnt-- == 0) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
+            printf("ARP PENDING: ttl = 0 and retryCnt = %d\n", arpEntry.retryCnt);
             arpEntry.state = ARP_ENTRY_FREE;
           } else {                                  // 响应事件超时，且剩余请求次数，尝试重新获取 arp 响应包
+            printf("ARP PENDING: ttl == 0 but retryCnt = %d\n", arpEntry.retryCnt);
             arpMakeRequest(&arpEntry.ipAddr);
             arpEntry.state = ARP_ENTRY_PENDING;
             arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;

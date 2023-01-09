@@ -3,7 +3,6 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <time.h>
 
 static pcap_t *pcap;
 // const char *ipStr = "192.168.2.101";
@@ -35,8 +34,4 @@ NetErr netDriverRead(NetPacket **packet) {
   }
 
   return NET_ERROR_IO;
-}
-
-const net_time_t getNetRunsTime(void) {
-  return (net_time_t)(clock() / CLOCKS_PER_SEC);
 }
