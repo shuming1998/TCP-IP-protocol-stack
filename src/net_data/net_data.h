@@ -39,6 +39,7 @@ typedef enum NetProtocol {
   NET_PROTOCOL_IP = 0x0800,
   NET_PROTOCOL_ARP = 0x0806,
   NET_PROTOCOL_ICMP = 1,
+  NET_PROTOCOL_UDP = 17,
 }NetProtocol;
 
 typedef enum NetErr {
@@ -185,9 +186,20 @@ struct UdpBlk {
     UDP_STATE_USED,
   }state;
 
-  uint16_t localPort;   // 本地端口
-  udpHandler handler;   // udp 回调函数，用于接收到数据后的处理
+  uint16_t localPort;         // 本地端口
+  udpHandler handler;         // udp 回调函数，用于接收到数据后的处理
 };
+
+#pragma pack(1)
+// udp 包头
+typedef struct UdpHdr {
+  uint16_t srcPort;           // 源端口
+  uint16_t destPort;          // 目的端口
+  uint16_t totalLen;          // udp 数据包总长度
+  uint16_t pseudoChecksum;    // 增加伪首部的校验和
+}UdpHdr;
+#pragma pack()
+
 // 初始化 udp
 void initUpd(void);
 // 获取一个未使用的 udp 控制块
@@ -198,6 +210,8 @@ void freeUdpBlk(UdpBlk *udpBlk);
 UdpBlk *findUdpBlk(uint16_t port);
 // 关联指定 udpBlk 与 localPort
 NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort);
+// 处理输入的 udp 数据包
+void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *udpPacket);
 //=============UDP end=============//
 
 

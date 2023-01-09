@@ -341,7 +341,26 @@ void parseRecvedIpPacket(NetPacket *packet) {
   // 从包头中提取 srcIp
   getIpFromBuf(&srcIp, ipHdr->srcIp);
   printf("ipHdr->protocol: %d", ipHdr->protocol);
+
   switch (ipHdr->protocol) {
+    case NET_PROTOCOL_UDP:
+      printf("NET_PROTOCOL_UDP\n");
+      if (packet->size >= sizeof(UdpHdr)) {
+        // 获取 udp 包头
+        UdpHdr *udpHdr = (UdpHdr *)(packet->data + hdrSize);
+        // 先查找对应的 udp 控制块
+        UdpBlk *udp = findUdpBlk(solveEndian16(udpHdr->destPort));
+        // 然后传给 udp 包解析函数
+        if (udp) {
+          // 移除 udp 包头
+          rmHdr(packet, hdrSize);
+          // 处理 udp 数据包
+          parseRecvedUdpPacket(udp, &srcIp, packet);
+        } else if (!udp) {
+          destIcmpUnreach(ICMP_CODE_PORT_UNREACHABLE, ipHdr);
+        }
+      }
+      break;
     case NET_PROTOCOL_ICMP:
       printf("NET_PROTOCOL_ICMP\n");
       rmHdr(packet, hdrSize);
@@ -482,6 +501,58 @@ NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort) {
 
   udpBlk->localPort = localPort;
   return NET_ERROR_OK;
+}
+
+// 计算添加伪首部的校验和
+uint16_t checksumPseudo(const IpAddr *srcIp,  // 源 ip
+                        const IpAddr *destIp, // 目的 ip
+                        uint8_t protocol,     // 协议号
+                        uint16_t *buf,        // udp 数据包
+                        uint16_t size) {      // udp 数据包大小
+  // 将 1 个字节的填充和 15 个字节的协议号整合到 2 字节数组中
+  uint16_t zeroProtocol[] = { 0, protocol };
+  // 大端表示的 udp 包长度
+  uint16_t udpLen = solveEndian16(size);
+
+  // 先计算伪首部累加和
+  uint32_t sum = checksum16((uint16_t *)srcIp->array, NET_IPV4_ADDR_SIZE, 0, 0);
+  sum = checksum16((uint16_t *)destIp->array, NET_IPV4_ADDR_SIZE, sum, 0);
+  sum = checksum16((uint16_t *)zeroProtocol, 2, sum, 0);
+  sum = checksum16((uint16_t *)&udpLen, 2, sum, 0);
+
+  // 再将伪首部累加和与 udp 数据包累加和相加、取反
+  return checksum16(buf, size, sum, 1);
+}
+
+void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *packet) {
+  printf("===parseRecvedUdpPacket===\n");
+  UdpHdr *udpHdr = (UdpHdr *)packet->data;
+  uint16_t preChecksum;
+
+  if ((packet->size) < sizeof(UdpHdr) || (packet->size < solveEndian16(udpHdr->totalLen))) {
+    return;
+  }
+
+  preChecksum = udpHdr->pseudoChecksum;
+  udpHdr->pseudoChecksum = 0;
+  // 如果发送方将校验和设置为 0 就跳过
+  if (udpHdr->pseudoChecksum != 0) {
+    uint16_t checksum = checksumPseudo(srcIp,
+                                      &netifIpAddr,
+                                      NET_PROTOCOL_UDP,
+                                      (uint16_t *)udpHdr,
+                                      solveEndian16(udpHdr->totalLen));
+    checksum = (checksum == 0) ? 0xFFFF : checksum;
+    if (checksum != preChecksum) {
+      return;
+    }
+  }
+
+  // 移除 udp 包头，将 udp 数据部分交给 handler 处理
+  uint16_t srcPort = solveEndian16(udpHdr->srcPort);
+  if (udp->handler) {
+    udp->handler(udp, srcIp, srcPort, packet);
+  }
 }
 
 void initNet(void) {

@@ -1,10 +1,11 @@
 #include "datatime_server.h"
 #include <string.h>
+#include <stdio.h>
 #include <time.h>
 
 #define TIME_STR_SIZE 128   // 字符串大小
 
-NetErr datatimeHandler(UdpBlk *udp, IpAddr *srcIp, uint16_t srcPort, NetPacket *packet) {
+static NetErr datatimeHandler(UdpBlk *udp, IpAddr *srcIp, uint16_t srcPort, NetPacket *packet) {
   time_t rawTime;
   const struct tm *timeInfo;
   NetPacket *tsPacket = netPacketAllocForSend(TIME_STR_SIZE);
@@ -20,7 +21,13 @@ NetErr datatimeHandler(UdpBlk *udp, IpAddr *srcIp, uint16_t srcPort, NetPacket *
 }
 
 NetErr createDatatimeServer(uint16_t port) {
+  printf("===createDatatimeServer===\n");
   UdpBlk *udp = getUdpBlk(datatimeHandler);
+
+  if ((UdpBlk *)0 == udp) {
+    return NET_ERROR_IO;
+  }
+
   bindUdpBlk(udp, port);
 
   return NET_ERROR_OK;
