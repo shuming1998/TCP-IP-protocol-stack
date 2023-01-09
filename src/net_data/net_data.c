@@ -102,8 +102,8 @@ static NetErr sendEthernetTo(NetProtocol protocol, const uint8_t *destMac, NetPa
   etherHdr = (EtherHeader *)packet->data;                     // 填充以太网包字段
   memcpy(etherHdr->destMac, destMac, NET_MAC_ADDR_SIZE);      // 填充目的 Mac 地址
   memcpy(etherHdr->sourceMac, netifMac, NET_MAC_ADDR_SIZE);   // 填充源 Mac 地址
-
   etherHdr->protocol = solveEndian16(protocol);               // 填充上层协议类型
+
   return netDriverSend(packet);
 }
 
@@ -113,7 +113,7 @@ static NetErr sendByEthernet(IpAddr *destIp, NetPacket *packet) {
   NetErr err;
   uint8_t *macAddr;
 
-  if ((err = arpResolve(destIp, &macAddr)) == NET_ERROR_OK) {
+  if ((err = arpResolve(destIp, &macAddr) == NET_ERROR_OK)) {
     return sendEthernetTo(NET_PROTOCOL_IP, macAddr, packet);
   }
 
@@ -235,7 +235,7 @@ void parseRecvedArpPacket(NetPacket *packet) {
       return;
     }
 
-    switch (opcode) {
+    switch (solveEndian16(arpPacketIn->opcode)) {
       // 处理请求包
       case ARP_REQUEST:
         arpMakeResponse(arpPacketIn);
@@ -256,15 +256,15 @@ void queryArpEntry() {
   if (checkArpEntryTtl(&arpTimer, ARP_TIMER_PERIOD)) {
     switch (arpEntry.state) {
       case ARP_ENTRY_OK:
-        if (0 == --arpEntry.ttl) {
+        if (--arpEntry.ttl == 0) {
           arpMakeRequest(&arpEntry.ipAddr);         // arp 表项超时，重新获取该超时的 arp 表项
           arpEntry.state = ARP_ENTRY_PENDING;       // 更新 arp 表项状态为：正在查询
           arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL; // 设置 PENDING 状态的 arp 表项响应包的超时时间
         }
         break;
       case ARP_ENTRY_PENDING:
-        if (0 == --arpEntry.ttl) {                  // 判断 PENDING 状态 arp 包的响应时间是否超时
-          if (0 == arpEntry.retryCnt--) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
+        if (--arpEntry.ttl == 0) {                  // 判断 PENDING 状态 arp 包的响应时间是否超时
+          if (arpEntry.retryCnt-- == 0) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
             arpEntry.state = ARP_ENTRY_FREE;
           } else {                                  // 响应事件超时，且剩余请求次数，尝试重新获取 arp 响应包
             arpMakeRequest(&arpEntry.ipAddr);
@@ -318,7 +318,7 @@ void parseRecvedIpPacket(NetPacket *packet) {
 
   headerSize = ipHdr->headerLen * 4;
   totalSize = solveEndian16(ipHdr->totalLen);
-  if ((headerSize < sizeof(IpHeader)) || (totalSize < headerSize) || (packet->size < totalSize)) {
+  if ((headerSize < sizeof(IpHeader)) || ((totalSize < headerSize) || (packet->size < totalSize))) {
     printf("invalid ip packet size!\n");
     return;
   }
@@ -329,8 +329,7 @@ void parseRecvedIpPacket(NetPacket *packet) {
     printf("invalid checksum!\n");
     return;
   }
-
-  //ipHdr->hdrChecksum = preChecksum;
+  ipHdr->hdrChecksum = preChecksum;
 
   printf("check ip packet dest ip addr!\n");
   // 只处理发送给自己的 ip 数据包
@@ -391,9 +390,9 @@ static NetErr replyIcmpRequest(IcmpHeader *icmpHdr, IpAddr *sourceIp, NetPacket 
   icmpReplyHdr->id = icmpHdr->id;
   icmpReplyHdr->seq = icmpHdr->seq;
   // 拷贝 icmp 数据段
-  memcpy((uint8_t *)icmpReplyHdr + sizeof(IcmpHeader),
-         (uint8_t *)icmpHdr + sizeof(IcmpHeader),
-         packet->size - sizeof(IcmpHeader));
+  memcpy(((uint8_t *)icmpReplyHdr) + sizeof(IcmpHeader),
+        ((uint8_t *)icmpHdr) + sizeof(IcmpHeader),
+        packet->size - sizeof(IcmpHeader));
   icmpReplyHdr->checksum = checksum16((uint16_t *)icmpReplyHdr, respPkt->size, 0, 1);
 
   return sendIpPacketTo(NET_PROTOCOL_ICMP, sourceIp, respPkt);

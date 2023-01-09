@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define NET_CFG_NETIF_IP              { 192, 168, 2, 3 }
+#define NET_CFG_NETIF_IP              { 192, 168, 1, 8 }
 #define NET_CFG_DATA_PACKET_MAX_SIZE  1518  // 以太网每次最大发送数据量：4 字节 CRC + 1514 字节数据
 #define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项超时时间(秒)
 #define ARP_CFG_ENTRY_PENDING_TTL     (1)   // arp 表项 PENDING 超时时间(秒)
