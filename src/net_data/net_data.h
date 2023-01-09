@@ -8,7 +8,7 @@
 #define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项超时时间(秒)
 #define ARP_CFG_ENTRY_PENDING_TTL     (1)   // arp 表项 PENDING 超时时间(秒)
 #define ARP_CFG_MAX_RETRY_TIMES       4     // arp 表项 PENDING 状态下请求次数
-#define UDP_CFG_MAX_UDP               10    // 
+#define UDP_CFG_MAX_UDP               10    //
 
 #define NET_MAC_ADDR_SIZE             6     // 以太网 RFC894 Mac 地址字节大小
 #define NET_IPV4_ADDR_SIZE            4     // 以太网 Ipv4 地址字节大小
@@ -29,9 +29,9 @@ typedef union IpAddr {
 */
 #pragma pack(1)
 typedef struct EtherHdr {
-  uint8_t dstMac[NET_MAC_ADDR_SIZE];      // 目的 Mac 地址
-  uint8_t srcMac[NET_MAC_ADDR_SIZE];      // 源 Mac 地址
-  uint16_t protocol;                      // 上层协议类型
+  uint8_t dstMac[NET_MAC_ADDR_SIZE];        // 目的 Mac 地址
+  uint8_t srcMac[NET_MAC_ADDR_SIZE];        // 源 Mac 地址
+  uint16_t protocol;                        // 上层协议类型
 }EtherHdr;
 #pragma pack()
 
