@@ -357,11 +357,12 @@ void parseRecvedIpPacket(NetPacket *packet) {
         UdpBlk *udp = findUdpBlk(solveEndian16(udpHdr->destPort));
         // 然后传给 udp 包解析函数
         if (udp) {
+          truncatePacket(packet, totalSize);
           // 移除 udp 包头
           rmHdr(packet, hdrSize);
           // 处理 udp 数据包
           parseRecvedUdpPacket(udp, &srcIp, packet);
-        } else if (!udp) {
+        } else {
           destIcmpUnreach(ICMP_CODE_PORT_UNREACHABLE, ipHdr);
         }
       }
@@ -403,7 +404,6 @@ NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet) {
   return sendByEthernet(destIp, packet);
 }
 
-
 void initIcmp(void) {}
 
 static NetErr replyIcmpRequest(IcmpHdr *icmpHdr, IpAddr *srcIp, NetPacket *packet) {
@@ -414,12 +414,12 @@ static NetErr replyIcmpRequest(IcmpHdr *icmpHdr, IpAddr *srcIp, NetPacket *packe
   icmpReplyHdr->type = ICMP_CODE_ECHO_REPLY;
   icmpReplyHdr->code = 0;
   icmpReplyHdr->id = icmpHdr->id;
-  icmpReplyHdr->seq = icmpHdr->seq;
+  icmpReplyHdr->seq = icmpHdr->seq;\
+  icmpReplyHdr->checksum = 0;
   // 拷贝 icmp 数据段
   memcpy(((uint8_t *)icmpReplyHdr) + sizeof(IcmpHdr),
         ((uint8_t *)icmpHdr) + sizeof(IcmpHdr),
         packet->size - sizeof(IcmpHdr));
-  icmpReplyHdr->checksum = 0;
   icmpReplyHdr->checksum = checksum16((uint16_t *)icmpReplyHdr, respPkt->size, 0, 1);
 
   return sendIpPacketTo(NET_PROTOCOL_ICMP, srcIp, respPkt);
@@ -434,16 +434,18 @@ void parseRecvedIcmpPacket(IpAddr *srcIp, NetPacket *packet) {
 }
 
 NetErr destIcmpUnreach(uint8_t code, IpHdr *ipHdr) {
+  IcmpHdr *icmpHdr;
   IpAddr destIp;
-  getIpFromBuf(&destIp, ipHdr->srcIp);
+  NetPacket *packet;
 
   // 计算 icmp 不可达报文长度
   uint16_t ipHdrSize = ipHdr->hdrLen * 4;
   uint16_t ipDataSize = solveEndian16(ipHdr->totalLen) - ipHdrSize;
-  ipDataSize = ipHdrSize + min(ipDataSize, ICMP_DATA_ORIGINAL);
-  NetPacket *packet = netPacketAllocForSend(sizeof(IcmpHdr) + ipDataSize);
+  ipDataSize = ipHdrSize + ipDataSize;
+  // ipDataSize = ipHdrSize + min(ipDataSize, ICMP_DATA_ORIGINAL);
 
-  IcmpHdr *icmpHdr = (IcmpHdr *)packet->data;
+  packet = netPacketAllocForSend(sizeof(IcmpHdr) + ipDataSize);
+  icmpHdr = (IcmpHdr *)packet->data;
   icmpHdr->type = ICMP_TYPE_UNREACHABLE;
   icmpHdr->code = code;
   icmpHdr->id = 0;   // unused
@@ -452,6 +454,8 @@ NetErr destIcmpUnreach(uint8_t code, IpHdr *ipHdr) {
   memcpy(((uint8_t *)icmpHdr) + sizeof(IcmpHdr), ipHdr, ipDataSize);
   icmpHdr->checksum = 0;
   icmpHdr->checksum = checksum16((uint16_t *)icmpHdr, packet->size, 0, 1);
+
+  getIpFromBuf(&destIp, ipHdr->srcIp);
 
   return sendIpPacketTo(NET_PROTOCOL_ICMP, &destIp, packet);
 }
@@ -483,7 +487,7 @@ UdpBlk *findUdpBlk(uint16_t port) {
   UdpBlk *cur, *end;
 
   for (cur = udpSocket, end = &udpSocket[UDP_CFG_MAX_UDP]; cur < end; ++cur) {
-    if ((cur->state == UDP_STATE_USED) && (cur->localPort == port)) {
+    if ((cur->state != UDP_STATE_FREE) && (cur->localPort == port)) {
       return cur;
     }
   }
@@ -491,20 +495,20 @@ UdpBlk *findUdpBlk(uint16_t port) {
   return (UdpBlk *)0;
 }
 
-NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort) {
+NetErr bindUdpBlk(UdpBlk *udp, uint16_t localPort) {
   UdpBlk *cur, *end;
   // 0 号端口有特定用途
   if (localPort == 0) {
-    return NET_ERR_PORT_USED;
+    return NET_ERR_PORT_OCCUPIED;
   }
 
   for (cur = udpSocket, end = &udpSocket[UDP_CFG_MAX_UDP]; cur < end; ++cur) {
-    if ((cur != udpBlk) && (cur->localPort == localPort)) {
+    if ((cur != udp) && (cur->localPort == localPort)) {
       return NET_ERR_PORT_USED;
     }
   }
 
-  udpBlk->localPort = localPort;
+  udp->localPort = localPort;
   return NET_ERROR_OK;
 }
 
@@ -515,7 +519,7 @@ uint16_t checksumPseudo(const IpAddr *srcIp,  // 源 ip
                         uint16_t *buf,        // udp 数据包
                         uint16_t size) {      // udp 数据包大小
   // 将 1 个字节的填充和 15 个字节的协议号整合到 2 字节数组中
-  uint16_t zeroProtocol[] = { 0, protocol };
+  uint16_t zeroProtocol[2] = { 0, protocol };
   // 大端表示的 udp 包长度
   uint16_t udpLen = solveEndian16(size);
 
@@ -534,7 +538,7 @@ void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *packet) {
   UdpHdr *udpHdr = (UdpHdr *)packet->data;
   uint16_t preChecksum;
 
-  if ((packet->size) < sizeof(UdpHdr) || (packet->size < solveEndian16(udpHdr->totalLen))) {
+  if ((packet->size < sizeof(UdpHdr)) || (packet->size < solveEndian16(udpHdr->totalLen))) {
     return;
   }
 
@@ -555,6 +559,8 @@ void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *packet) {
 
   // 移除 udp 包头，将 udp 数据部分交给 handler 处理
   uint16_t srcPort = solveEndian16(udpHdr->srcPort);
+  rmHdr(packet, sizeof(UdpHdr));
+
   if (udp->handler) {
     udp->handler(udp, srcIp, srcPort, packet);
   }
@@ -575,7 +581,7 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
                                   NET_PROTOCOL_UDP,
                                   (uint16_t *)packet->data,
                                   packet->size);
-  udpHdr->pseudoChecksum = pseudoChecksum;
+  udpHdr->pseudoChecksum = (pseudoChecksum == 0) ? 0xFFFF : pseudoChecksum;
 
   return sendIpPacketTo(NET_PROTOCOL_UDP, destIp, packet);
 }

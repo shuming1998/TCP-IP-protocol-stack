@@ -47,6 +47,7 @@ typedef enum NetErr {
   NET_ERROR_IO = -1,
   NET_ERROR_NONE = -2,
   NET_ERR_PORT_USED = -3,
+  NET_ERR_PORT_OCCUPIED = -4,
 }NetErr;
 
 // 在网络中发送的数据包
@@ -212,7 +213,7 @@ void freeUdpBlk(UdpBlk *udpBlk);
 // 查找 udp 控制块，判断收到的数据包应该传给哪个回调函数处理. port 为目标端口
 UdpBlk *findUdpBlk(uint16_t port);
 // 关联指定 udpBlk 与 localPort
-NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort);
+NetErr bindUdpBlk(UdpBlk *udp, uint16_t localPort);
 // 处理输入的 udp 数据包
 void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *udpPacket);
 // 发送 udp 数据包
