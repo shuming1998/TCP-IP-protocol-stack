@@ -61,6 +61,9 @@ NetPacket *netPacketAllocForSend(uint16_t dataSize);
 // 处理接收端数据包
 NetPacket *netPacketAllocForRead(uint16_t dataSize);
 
+// 将数据包截断至指定 size
+void truncatePacket(NetPacket *packet, uint16_t size);
+
 //*************ARP begin*************//
 #define ARP_HDWR_ETHER  0x1               // 以太网
 #define ARP_REQUEST     0X1               // ARP请求包
@@ -212,6 +215,8 @@ UdpBlk *findUdpBlk(uint16_t port);
 NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort);
 // 处理输入的 udp 数据包
 void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *udpPacket);
+// 发送 udp 数据包
+NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *packet);
 //=============UDP end=============//
 
 

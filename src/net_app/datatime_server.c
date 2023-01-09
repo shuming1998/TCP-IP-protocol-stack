@@ -13,15 +13,13 @@ static NetErr datatimeHandler(UdpBlk *udp, IpAddr *srcIp, uint16_t srcPort, NetP
   time(&rawTime);
   timeInfo = localtime(&rawTime);
   size_t strSize = strftime((char *)packet->data, TIME_STR_SIZE, "%A, %B, %d, %Y %T-%z", timeInfo);
-
+  truncatePacket(tsPacket, (uint16_t)strSize);
 
   // 发送
-
-  return NET_ERROR_OK;
+  return sendUdpTo(udp, srcIp, srcPort, tsPacket);
 }
 
 NetErr createDatatimeServer(uint16_t port) {
-  printf("===createDatatimeServer===\n");
   UdpBlk *udp = getUdpBlk(datatimeHandler);
 
   if ((UdpBlk *)0 == udp) {

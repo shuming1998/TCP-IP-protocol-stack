@@ -23,6 +23,14 @@ static ArpEntry arpEntry;                       // arp 单表项
 static net_time_t  arpTimer;                    // arp 定时查询时间
 static UdpBlk udpSocket[UDP_CFG_MAX_UDP];
 
+//  根据接收到的 arp 响应包，更新 arp 表项
+static void updateArpEntry(uint8_t *senderIp, uint8_t *senderMac);
+
+// 将数据包的大小截断至指定 size
+void truncatePacket(NetPacket *packet, uint16_t size) {
+  packet->size = min(packet->size, size);
+}
+
 int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
   net_time_t curRunsTime = getNetRunsTime();
 
@@ -78,11 +86,6 @@ static void rmHdr(NetPacket *packet, uint16_t hdrSize) {
   packet->size -= hdrSize;
 }
 
-// 将数据包的大小截断至指定 size
-static void truncatePacket(NetPacket *packet, uint16_t size) {
-  packet->size = min(packet->size, size);
-}
-
 // 初始化以太网
 static NetErr initEthernet(void) {
   // 将源 Mac 地址写入本地变量
@@ -134,13 +137,16 @@ static void parseEthernet(NetPacket *packet) {
     case NET_PROTOCOL_ARP:
       printf("NET_PROTOCOL_ARP\n");
       rmHdr(packet, sizeof(EtherHdr));  // 移除以太网包头
-      parseRecvedArpPacket(packet);               // 解析 arp 包
+      parseRecvedArpPacket(packet);     // 解析 arp 包
       break;
-    case NET_PROTOCOL_IP:
+    case NET_PROTOCOL_IP: {
       printf("NET_PROTOCOL_IP\n");
+      IpHdr *ipHdr = (IpHdr *)(packet->data + sizeof(EtherHdr));
+      updateArpEntry(ipHdr->srcIp, etherHdr->srcMac);
       rmHdr(packet, sizeof(EtherHdr));  // 移除以太网包头
-      parseRecvedIpPacket(packet);                // 解析 ip 包
+      parseRecvedIpPacket(packet);      // 解析 ip 包
       break;
+    }
   }
 }
 
@@ -206,7 +212,6 @@ NetErr arpResolve(const IpAddr *ipAddr, uint8_t **macAddr) {
   return NET_ERROR_NONE;
 }
 
-//  根据接收到的 arp 响应包，更新 arp 表项
 static void updateArpEntry(uint8_t *senderIp, uint8_t *senderMac) {
   memcpy(arpEntry.ipAddr.array, senderIp, NET_IPV4_ADDR_SIZE);
   memcpy(arpEntry.macAddr, senderMac, NET_MAC_ADDR_SIZE);
@@ -553,6 +558,26 @@ void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *packet) {
   if (udp->handler) {
     udp->handler(udp, srcIp, srcPort, packet);
   }
+}
+
+NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *packet) {
+  UdpHdr *udpHdr;
+  uint16_t pseudoChecksum;
+
+  addHdr(packet, sizeof(UdpHdr));
+  udpHdr = (UdpHdr *)packet->data;
+  udpHdr->srcPort = solveEndian16(udp->localPort);
+  udpHdr->destPort = solveEndian16(destPort);
+  udpHdr->totalLen = solveEndian16(packet->size);
+  udpHdr->pseudoChecksum = 0;
+  pseudoChecksum = checksumPseudo(&netifIpAddr,
+                                  destIp,
+                                  NET_PROTOCOL_UDP,
+                                  (uint16_t *)packet->data,
+                                  packet->size);
+  udpHdr->pseudoChecksum = pseudoChecksum;
+
+  return sendIpPacketTo(NET_PROTOCOL_UDP, destIp, packet);
 }
 
 void initNet(void) {
