@@ -15,12 +15,13 @@ static const IpAddr netifIpAddr = NET_CFG_NETIF_IP;
 // 无回报 ARP 广播地址
 static const uint8_t bcastEther[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-static uint8_t netifMac[NET_MAC_ADDR_SIZE]; // Network Interface Card Mac 地址
+static uint8_t netifMac[NET_MAC_ADDR_SIZE];     // Network Interface Card Mac 地址
 
-static NetPacket sendPacket;            // 接收缓冲
-static NetPacket recvPacket;            // 发送缓冲
-static ArpEntry arpEntry;                   // arp 单表项
-static net_time_t  arpTimer;                // arp 定时查询时间
+static NetPacket sendPacket;                    // 接收缓冲
+static NetPacket recvPacket;                    // 发送缓冲
+static ArpEntry arpEntry;                       // arp 单表项
+static net_time_t  arpTimer;                    // arp 定时查询时间
+static UdpCtrlBlock udpSocket[UDP_CFG_MAX_UDP];
 
 int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
   net_time_t curRunsTime = getNetRunsTime();
@@ -66,15 +67,15 @@ NetPacket *netPacketAllocForRead(uint16_t dataSize) {
 }
 
 // 添加包头
-static void addHeader(NetPacket *packet, uint16_t headerSize) {
-  packet->data -= headerSize;
-  packet->size += headerSize;
+static void addHdr(NetPacket *packet, uint16_t hdrSize) {
+  packet->data -= hdrSize;
+  packet->size += hdrSize;
 }
 
 // 移除包头
-static void removeHeader(NetPacket *packet, uint16_t headerSize) {
-  packet->data += headerSize;
-  packet->size -= headerSize;
+static void rmHdr(NetPacket *packet, uint16_t hdrSize) {
+  packet->data += hdrSize;
+  packet->size -= hdrSize;
 }
 
 // 将数据包的大小截断至指定 size
@@ -95,14 +96,14 @@ static NetErr initEthernet(void) {
 }
 
 // 发送以太网包
-static NetErr sendEthernetTo(NetProtocol protocol, const uint8_t *destMac, NetPacket *packet) {
-  EtherHeader *etherHdr;
+static NetErr sendEthernetTo(NetProtocol protocol, const uint8_t *dstMac, NetPacket *packet) {
+  EtherHdr *etherHdr;
 
-  addHeader(packet, sizeof(EtherHeader));                     // 添加以太网包头
-  etherHdr = (EtherHeader *)packet->data;                     // 填充以太网包字段
-  memcpy(etherHdr->destMac, destMac, NET_MAC_ADDR_SIZE);      // 填充目的 Mac 地址
-  memcpy(etherHdr->sourceMac, netifMac, NET_MAC_ADDR_SIZE);   // 填充源 Mac 地址
-  etherHdr->protocol = solveEndian16(protocol);               // 填充上层协议类型
+  addHdr(packet, sizeof(EtherHdr));                         // 添加以太网包头
+  etherHdr = (EtherHdr *)packet->data;                      // 填充以太网包字段
+  memcpy(etherHdr->dstMac, dstMac, NET_MAC_ADDR_SIZE);      // 填充目的 Mac 地址
+  memcpy(etherHdr->srcMac, netifMac, NET_MAC_ADDR_SIZE);    // 填充源 Mac 地址
+  etherHdr->protocol = solveEndian16(protocol);             // 填充上层协议类型
 
   return netDriverSend(packet);
 }
@@ -122,22 +123,22 @@ static NetErr sendByEthernet(IpAddr *destIp, NetPacket *packet) {
 
 // 解析以太网包
 static void parseEthernet(NetPacket *packet) {
-  if (packet->size <= sizeof(EtherHeader)) {
-    printf("packet->size <= sizeof(EtherHeader)!\n");
+  if (packet->size <= sizeof(EtherHdr)) {
+    printf("packet->size <= sizeof(EtherHdr)!\n");
     return;
   }
 
-  EtherHeader *etherHdr = (EtherHeader *)packet->data;
+  EtherHdr *etherHdr = (EtherHdr *)packet->data;
 
   switch (solveEndian16(etherHdr->protocol)) {
     case NET_PROTOCOL_ARP:
       printf("NET_PROTOCOL_ARP\n");
-      removeHeader(packet, sizeof(EtherHeader));  // 移除以太网包头
+      rmHdr(packet, sizeof(EtherHdr));  // 移除以太网包头
       parseRecvedArpPacket(packet);               // 解析 arp 包
       break;
     case NET_PROTOCOL_IP:
       printf("NET_PROTOCOL_IP\n");
-      removeHeader(packet, sizeof(EtherHeader));  // 移除以太网包头
+      rmHdr(packet, sizeof(EtherHdr));  // 移除以太网包头
       parseRecvedIpPacket(packet);                // 解析 ip 包
       break;
   }
@@ -305,10 +306,10 @@ static uint16_t checksum16(uint16_t *buf, uint16_t len, uint16_t preSum, int com
 void initIp(void) {}
 
 void parseRecvedIpPacket(NetPacket *packet) {
-  IpHeader *ipHdr = (IpHeader *)packet->data;
-  uint32_t headerSize, totalSize;
+  IpHdr *ipHdr = (IpHdr *)packet->data;
+  uint32_t hdrSize, totalSize;
   uint16_t preChecksum;
-  IpAddr sourceIp;
+  IpAddr srcIp;
 
   printf("check ip packet version!\n");
   if (ipHdr->version != NET_VERSION_IPV4) {
@@ -316,16 +317,16 @@ void parseRecvedIpPacket(NetPacket *packet) {
     return;
   }
 
-  headerSize = ipHdr->headerLen * 4;
+  hdrSize = ipHdr->hdrLen * 4;
   totalSize = solveEndian16(ipHdr->totalLen);
-  if ((headerSize < sizeof(IpHeader)) || ((totalSize < headerSize) || (packet->size < totalSize))) {
+  if ((hdrSize < sizeof(IpHdr)) || ((totalSize < hdrSize) || (packet->size < totalSize))) {
     printf("invalid ip packet size!\n");
     return;
   }
 
   preChecksum = ipHdr->hdrChecksum;
   ipHdr->hdrChecksum = 0;
-  if (preChecksum != checksum16((uint16_t *)ipHdr, headerSize, 0, 1)) {
+  if (preChecksum != checksum16((uint16_t *)ipHdr, hdrSize, 0, 1)) {
     printf("invalid checksum!\n");
     return;
   }
@@ -337,14 +338,14 @@ void parseRecvedIpPacket(NetPacket *packet) {
     return;
   }
 
-  // 从包头中提取 sourceIp
-  getIpFromBuf(&sourceIp, ipHdr->sourceIp);
+  // 从包头中提取 srcIp
+  getIpFromBuf(&srcIp, ipHdr->srcIp);
   printf("ipHdr->protocol: %d", ipHdr->protocol);
   switch (ipHdr->protocol) {
     case NET_PROTOCOL_ICMP:
       printf("NET_PROTOCOL_ICMP\n");
-      removeHeader(packet, headerSize);
-      parseRecvedIcmpPacket(&sourceIp, packet);
+      rmHdr(packet, hdrSize);
+      parseRecvedIcmpPacket(&srcIp, packet);
       break;
     default:
       // 其他协议不可达
@@ -355,23 +356,23 @@ void parseRecvedIpPacket(NetPacket *packet) {
 
 NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet) {
   static uint32_t ipPacketId = 0;
-  IpHeader *ipHdr;
+  IpHdr *ipHdr;
 
   // 设置 ip 数据包头部
-  addHeader(packet, sizeof(IpHeader));
-  ipHdr = (IpHeader *)packet->data;
+  addHdr(packet, sizeof(IpHdr));
+  ipHdr = (IpHdr *)packet->data;
   ipHdr->version = NET_VERSION_IPV4;
-  ipHdr->headerLen = sizeof(IpHeader) / 4;
+  ipHdr->hdrLen = sizeof(IpHdr) / 4;
   ipHdr->tos = 0;
   ipHdr->totalLen = solveEndian16(packet->size);
   ipHdr->id = solveEndian16(ipPacketId);
   ipHdr->flagsFragment = 0;
   ipHdr->ttl = NET_IP_PACKET_TTL;
   ipHdr->protocol = protocol;
-  memcpy(ipHdr->sourceIp, netifIpAddr.array, NET_IPV4_ADDR_SIZE);
+  memcpy(ipHdr->srcIp, netifIpAddr.array, NET_IPV4_ADDR_SIZE);
   memcpy(ipHdr->destIp, destIp->array, NET_IPV4_ADDR_SIZE);
   ipHdr->hdrChecksum = 0; // 计算校验和之前必须先置为 0
-  ipHdr->hdrChecksum = checksum16((uint16_t *)ipHdr, sizeof(IpHeader), 0, 1);
+  ipHdr->hdrChecksum = checksum16((uint16_t *)ipHdr, sizeof(IpHdr), 0, 1);
 
   ++ipPacketId;
 
@@ -381,54 +382,58 @@ NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet) {
 
 void initIcmp(void) {}
 
-static NetErr replyIcmpRequest(IcmpHeader *icmpHdr, IpAddr *sourceIp, NetPacket *packet) {
+static NetErr replyIcmpRequest(IcmpHdr *icmpHdr, IpAddr *srcIp, NetPacket *packet) {
   // icmp 响应包的大小和请求包的大小相同
   NetPacket *respPkt = netPacketAllocForSend(packet->size);
 
-  IcmpHeader *icmpReplyHdr = (IcmpHeader *)respPkt->data;
+  IcmpHdr *icmpReplyHdr = (IcmpHdr *)respPkt->data;
   icmpReplyHdr->type = ICMP_CODE_ECHO_REPLY;
   icmpReplyHdr->code = 0;
   icmpReplyHdr->id = icmpHdr->id;
   icmpReplyHdr->seq = icmpHdr->seq;
   // 拷贝 icmp 数据段
-  memcpy(((uint8_t *)icmpReplyHdr) + sizeof(IcmpHeader),
-        ((uint8_t *)icmpHdr) + sizeof(IcmpHeader),
-        packet->size - sizeof(IcmpHeader));
+  memcpy(((uint8_t *)icmpReplyHdr) + sizeof(IcmpHdr),
+        ((uint8_t *)icmpHdr) + sizeof(IcmpHdr),
+        packet->size - sizeof(IcmpHdr));
   icmpReplyHdr->checksum = 0;
   icmpReplyHdr->checksum = checksum16((uint16_t *)icmpReplyHdr, respPkt->size, 0, 1);
 
-  return sendIpPacketTo(NET_PROTOCOL_ICMP, sourceIp, respPkt);
+  return sendIpPacketTo(NET_PROTOCOL_ICMP, srcIp, respPkt);
 }
 
-void parseRecvedIcmpPacket(IpAddr *sourceIp, NetPacket *packet) {
-  IcmpHeader *icmpHeader = (IcmpHeader *)packet->data;
+void parseRecvedIcmpPacket(IpAddr *srcIp, NetPacket *packet) {
+  IcmpHdr *icmpHdr = (IcmpHdr *)packet->data;
 
-  if ((packet->size >= sizeof(IcmpHeader)) && (icmpHeader->type == ICMP_CODE_ECHO_REQUEST)) {
-    replyIcmpRequest(icmpHeader, sourceIp, packet);
+  if ((packet->size >= sizeof(IcmpHdr)) && (icmpHdr->type == ICMP_CODE_ECHO_REQUEST)) {
+    replyIcmpRequest(icmpHdr, srcIp, packet);
   }
 }
 
-NetErr destIcmpUnreach(uint8_t code, IpHeader *ipHeader) {
+NetErr destIcmpUnreach(uint8_t code, IpHdr *ipHdr) {
   IpAddr destIp;
-  getIpFromBuf(&destIp, ipHeader->sourceIp);
+  getIpFromBuf(&destIp, ipHdr->srcIp);
 
   // 计算 icmp 不可达报文长度
-  uint16_t ipHdrSize = ipHeader->headerLen * 4;
-  uint16_t ipDataSize = solveEndian16(ipHeader->totalLen) - ipHdrSize;
+  uint16_t ipHdrSize = ipHdr->hdrLen * 4;
+  uint16_t ipDataSize = solveEndian16(ipHdr->totalLen) - ipHdrSize;
   ipDataSize = ipHdrSize + min(ipDataSize, ICMP_DATA_ORIGINAL);
-  NetPacket *packet = netPacketAllocForSend(sizeof(IcmpHeader) + ipDataSize);
+  NetPacket *packet = netPacketAllocForSend(sizeof(IcmpHdr) + ipDataSize);
 
-  IcmpHeader *icmpHdr = (IcmpHeader *)packet->data;
+  IcmpHdr *icmpHdr = (IcmpHdr *)packet->data;
   icmpHdr->type = ICMP_TYPE_UNREACHABLE;
   icmpHdr->code = code;
   icmpHdr->id = 0;   // unused
   icmpHdr->seq = 0;  // unused
   // 拷贝 icmp 数据段到 ipmp 头部后面
-  memcpy(((uint8_t *)icmpHdr) + sizeof(IcmpHeader), ipHeader, ipDataSize);
+  memcpy(((uint8_t *)icmpHdr) + sizeof(IcmpHdr), ipHdr, ipDataSize);
   icmpHdr->checksum = 0;
   icmpHdr->checksum = checksum16((uint16_t *)icmpHdr, packet->size, 0, 1);
 
   return sendIpPacketTo(NET_PROTOCOL_ICMP, &destIp, packet);
+}
+
+void initUpd(void) {
+  memset(udpSocket, 0, sizeof(udpSocket));
 }
 
 void initNet(void) {
@@ -436,6 +441,7 @@ void initNet(void) {
   initArp();
   initIp();
   initIcmp();
+  initUpd();
 }
 
 void queryNet(void) {
