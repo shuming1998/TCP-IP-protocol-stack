@@ -45,6 +45,7 @@ typedef enum NetErr {
   NET_ERROR_OK = 0,
   NET_ERROR_IO = -1,
   NET_ERROR_NONE = -2,
+  NET_ERR_PORT_USED = -3,
 }NetErr;
 
 // 在网络中发送的数据包
@@ -173,10 +174,11 @@ NetErr destIcmpUnreach(uint8_t code, IpHdr *ipHdr);
 
 
 //*************UDP begin*************//
-typedef struct UdpCtrlBlock UdpCtrlBlock;
-typedef NetErr (* udpHandler)(UdpCtrlBlock *udp, IpAddr *srcIp, uint16_t srcPort, NetPacket *packet);
+typedef struct UdpBlk UdpBlk;
+// udp 回调函数指针，代替进程
+typedef NetErr (* udpHandler)(UdpBlk *udp, IpAddr *srcIp, uint16_t srcPort, NetPacket *packet);
 // UDP 控制块
-struct UdpCtrlBlock {
+struct UdpBlk {
   // udp 状态
   enum {
     UDP_STATE_FREE,
@@ -188,6 +190,14 @@ struct UdpCtrlBlock {
 };
 // 初始化 udp
 void initUpd(void);
+// 获取一个未使用的 udp 控制块
+UdpBlk *getUdpBlk(udpHandler handler);
+// 归还已使用完毕的 udp 控制块
+void freeUdpBlk(UdpBlk *udpBlk);
+// 查找 udp 控制块，判断收到的数据包应该传给哪个回调函数处理. port 为目标端口
+UdpBlk *findUdpBlk(uint16_t port);
+// 关联指定 udpBlk 与 localPort
+NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort);
 //=============UDP end=============//
 
 

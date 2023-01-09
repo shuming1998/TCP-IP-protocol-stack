@@ -21,7 +21,7 @@ static NetPacket sendPacket;                    // 接收缓冲
 static NetPacket recvPacket;                    // 发送缓冲
 static ArpEntry arpEntry;                       // arp 单表项
 static net_time_t  arpTimer;                    // arp 定时查询时间
-static UdpCtrlBlock udpSocket[UDP_CFG_MAX_UDP];
+static UdpBlk udpSocket[UDP_CFG_MAX_UDP];
 
 int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
   net_time_t curRunsTime = getNetRunsTime();
@@ -434,6 +434,54 @@ NetErr destIcmpUnreach(uint8_t code, IpHdr *ipHdr) {
 
 void initUpd(void) {
   memset(udpSocket, 0, sizeof(udpSocket));
+}
+
+UdpBlk *getUdpBlk(udpHandler handler) {
+  UdpBlk *udp, *end;
+
+  for (udp = udpSocket, end = &udpSocket[UDP_CFG_MAX_UDP]; udp < end; ++udp) {
+    if (udp->state == UDP_STATE_FREE) {
+      udp->state = UDP_STATE_USED;
+      udp->localPort = 0;
+      udp->handler = handler;
+      return udp;
+    }
+  }
+
+  return (UdpBlk *)0;
+}
+
+void freeUdpBlk(UdpBlk *udpBlk) {
+  udpBlk->state = UDP_STATE_FREE;
+}
+
+UdpBlk *findUdpBlk(uint16_t port) {
+  UdpBlk *cur, *end;
+
+  for (cur = udpSocket, end = &udpSocket[UDP_CFG_MAX_UDP]; cur < end; ++cur) {
+    if ((cur->state == UDP_STATE_USED) && (cur->localPort == port)) {
+      return cur;
+    }
+  }
+
+  return (UdpBlk *)0;
+}
+
+NetErr bindUdpBlk(UdpBlk *udpBlk, uint16_t localPort) {
+  UdpBlk *cur, *end;
+  // 0 号端口有特定用途
+  if (localPort == 0) {
+    return NET_ERR_PORT_USED;
+  }
+
+  for (cur = udpSocket, end = &udpSocket[UDP_CFG_MAX_UDP]; cur < end; ++cur) {
+    if ((cur != udpBlk) && (cur->localPort == localPort)) {
+      return NET_ERR_PORT_USED;
+    }
+  }
+
+  udpBlk->localPort = localPort;
+  return NET_ERROR_OK;
 }
 
 void initNet(void) {
