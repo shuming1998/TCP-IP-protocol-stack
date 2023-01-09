@@ -347,6 +347,8 @@ void parseRecvedIpPacket(NetPacket *packet) {
       parseRecvedIcmpPacket(&sourceIp, packet);
       break;
     default:
+      // 其他协议不可达
+      destIcmpUnreach(ICMP_CODE_PROTO_UNREACHABLE, ipHdr);
       break;
   }
 }
@@ -386,13 +388,13 @@ static NetErr replyIcmpRequest(IcmpHeader *icmpHdr, IpAddr *sourceIp, NetPacket 
   IcmpHeader *icmpReplyHdr = (IcmpHeader *)respPkt->data;
   icmpReplyHdr->type = ICMP_CODE_ECHO_REPLY;
   icmpReplyHdr->code = 0;
-  icmpReplyHdr->checksum = 0;
   icmpReplyHdr->id = icmpHdr->id;
   icmpReplyHdr->seq = icmpHdr->seq;
   // 拷贝 icmp 数据段
   memcpy(((uint8_t *)icmpReplyHdr) + sizeof(IcmpHeader),
         ((uint8_t *)icmpHdr) + sizeof(IcmpHeader),
         packet->size - sizeof(IcmpHeader));
+  icmpReplyHdr->checksum = 0;
   icmpReplyHdr->checksum = checksum16((uint16_t *)icmpReplyHdr, respPkt->size, 0, 1);
 
   return sendIpPacketTo(NET_PROTOCOL_ICMP, sourceIp, respPkt);
@@ -404,6 +406,29 @@ void parseRecvedIcmpPacket(IpAddr *sourceIp, NetPacket *packet) {
   if ((packet->size >= sizeof(IcmpHeader)) && (icmpHeader->type == ICMP_CODE_ECHO_REQUEST)) {
     replyIcmpRequest(icmpHeader, sourceIp, packet);
   }
+}
+
+NetErr destIcmpUnreach(uint8_t code, IpHeader *ipHeader) {
+  IpAddr destIp;
+  getIpFromBuf(&destIp, ipHeader->sourceIp);
+
+  // 计算 icmp 不可达报文长度
+  uint16_t ipHdrSize = ipHeader->headerLen * 4;
+  uint16_t ipDataSize = solveEndian16(ipHeader->totalLen) - ipHdrSize;
+  ipDataSize = ipHdrSize + min(ipDataSize, ICMP_DATA_ORIGINAL);
+  NetPacket *packet = netPacketAllocForSend(sizeof(IcmpHeader) + ipDataSize);
+
+  IcmpHeader *icmpHdr = (IcmpHeader *)packet->data;
+  icmpHdr->type = ICMP_TYPE_UNREACHABLE;
+  icmpHdr->code = code;
+  icmpHdr->id = 0;   // unused
+  icmpHdr->seq = 0;  // unused
+  // 拷贝 icmp 数据段到 ipmp 头部后面
+  memcpy(((uint8_t *)icmpHdr) + sizeof(IcmpHeader), ipHeader, ipDataSize);
+  icmpHdr->checksum = 0;
+  icmpHdr->checksum = checksum16((uint16_t *)icmpHdr, packet->size, 0, 1);
+
+  return sendIpPacketTo(NET_PROTOCOL_ICMP, &destIp, packet);
 }
 
 void initNet(void) {

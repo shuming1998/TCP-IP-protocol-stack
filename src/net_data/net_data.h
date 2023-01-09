@@ -140,8 +140,12 @@ NetErr sendIpPacketTo(NetProtocol protocol, IpAddr *destIp, NetPacket *packet);
 //=============IP end=============//
 
 //=============ICMP begin=============//
-#define ICMP_CODE_ECHO_REQUEST  8
-#define ICMP_CODE_ECHO_REPLY    0
+#define ICMP_CODE_ECHO_REQUEST      8   // ICMP echo 请求
+#define ICMP_CODE_ECHO_REPLY        0   // ICMP echo 回复
+#define ICMP_CODE_PORT_UNREACHABLE  3   // ICMP 端口不可达
+#define ICMP_CODE_PROTO_UNREACHABLE 2   // ICMP 协议不可达
+#define ICMP_TYPE_UNREACHABLE       3   // ICMP 不可达报文 type 固定为 3
+#define ICMP_DATA_ORIGINAL          8   // ICMP 不可达报文数据中的 8 字节原始数据部分
 
 #pragma pack(1)
 // ICMP 包头
@@ -158,6 +162,10 @@ typedef struct IcmpHeader {
 void initIcmp(void);
 // 处理输入的 icmp 数据包
 void parseRecvedIcmpPacket(IpAddr *sourceIp, NetPacket *packet);
+/// @brief icmp 不可达报文, 数据部分 = 原始ip数据包的：(包头 + 8 字节数据)
+/// @brief 其中包头有 protocol 和 源/目的 ip 地址，根据 protocol 解析后面的 8 字节数据
+/// @brief 解析后的数据中有 源/目的 端口号，根据 ip + 端口号 就可以定位是哪个进程出现了差错
+NetErr destIcmpUnreach(uint8_t code, IpHeader *ipHeader);
 //=============ICMP end=============//
 
 
