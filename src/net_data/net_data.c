@@ -5,10 +5,41 @@
 #include <string.h>
 
 #define min(a, b) ((a) > (b) ? (b) : (a))
-#define convertOrder16(b) ((((b) & 0XFF) << 8) | (((b) >> 8) & 0xFF))
+#define convertOrder16(num) ((((num) & 0XFF) << 8) | (((num) >> 8) & 0xFF))
 #define ipAddrIsEqualBuf(addr, buf) (memcmp((addr)->array, (buf), NET_IPV4_ADDR_SIZE) == 0)
 #define ipAddrIsEqual(addrLhs, addrRhs) ((addrLhs)->addr == (addrRhs)->addr)
 #define getIpFromBuf(dest, buf) ((dest)->addr = *(uint32_t *)(buf))
+
+// 16 字节本地字节序转网络字节序
+uint16_t solveEndian16(uint16_t v) {
+	uint16_t a = 0x1234;
+	char b =  *(char *)&a;
+	if(b == 0x34) {
+		return convertOrder16(v);
+	}
+  return v;
+}
+
+// 32 字节本地字节序转网络字节序
+uint32_t solveEndian32(uint32_t v) {
+	uint16_t a = 0x1234;
+	char b =  *(char *)&a;
+
+	if(b == 0x34) {
+    uint32_t r_v;
+    uint8_t* src = (uint8_t*)&v;
+    uint8_t* dest = (uint8_t*)&r_v;
+
+    dest[0] = src[3];
+    dest[1] = src[2];
+    dest[2] = src[1];
+    dest[3] = src[0];
+
+    return r_v;
+  }
+
+  return v;
+}
 
 // 协议栈虚拟网卡 ip 地址
 static const IpAddr netifIpAddr = NET_CFG_NETIF_IP;
@@ -51,16 +82,6 @@ int checkArpEntryTtl(net_time_t *time, uint32_t sec) {
   }
 
   return 0;
-}
-
-// 本地字节序转网络字节序
-uint16_t solveEndian16(uint16_t protocol) {
-	uint16_t a = 0x1234;
-	char b =  *(char *)&a;
-	if(b == 0x34) {
-		return convertOrder16(protocol);
-	}
-  return protocol;
 }
 
 // 发送端数据包：添加包头，向下传递
@@ -265,7 +286,7 @@ void parseRecvedArpPacket(NetPacket *packet) {
 void queryArpEntry() {
   // 每隔一定时间才去查 arp 表项
   if (checkArpEntryTtl(&arpTimer, ARP_TIMER_PERIOD)) {
-    printf("time to query arp: %d\n", arpTimer);
+    // printf("time to query arp: %d\n", arpTimer);
     switch (arpEntry.state) {
       // case ARP_ENTRY_FREE:
       //   uint8_t senderIp[NET_IPV4_ADDR_SIZE] = {192, 168, 1, 7};
@@ -384,6 +405,11 @@ void parseRecvedIpPacket(NetPacket *packet) {
           destIcmpUnreach(ICMP_CODE_PORT_UNREACHABLE, ipHdr);
         }
       }
+      break;
+    case NET_PROTOCOL_TCP:
+      printf("NET_PROTOCOL_TCP\n");
+      rmHdr(packet, hdrSize);
+      parseRecvedTcpPacket(&srcIp, packet);
       break;
     case NET_PROTOCOL_ICMP:
       printf("NET_PROTOCOL_ICMP\n");
@@ -563,7 +589,7 @@ void parseRecvedUdpPacket(UdpBlk *udp, IpAddr *srcIp, NetPacket *packet) {
   preChecksum = udpHdr->pseudoChecksum;
   udpHdr->pseudoChecksum = 0;
   // 如果发送方将校验和设置为 0 就跳过
-  if (udpHdr->pseudoChecksum != 0) {
+  if (preChecksum != 0) {
     uint16_t checksum = checksumPseudo(srcIp,
                                       &netifIpAddr,
                                       NET_PROTOCOL_UDP,
@@ -651,6 +677,77 @@ static TcpBlk *findTcpBlk(IpAddr *remoteIp, uint16_t remotePort, uint16_t localP
 
 void initTcp() {
   memset(tcpSocket, 0, sizeof(tcpSocket));
+}
+
+// 发送 tcp 复位包报告错误
+static NetErr sendResetTcpPacket(uint32_t remoteAck,
+                                 uint16_t localPort,
+                                 IpAddr *remoteIp,
+                                 uint16_t remotePort) {
+  NetPacket *packet = netPacketAllocForSend(sizeof(TcpHdr));
+  TcpHdr *tcpHdr = (TcpHdr *)packet->data;
+
+  tcpHdr->srcPort = solveEndian16(localPort);
+  tcpHdr->destPort = solveEndian16(remotePort);
+  tcpHdr->seq = 0;
+  tcpHdr->ack = solveEndian32(remoteAck);
+  tcpHdr->hdrFlags.all = 0;
+  tcpHdr->hdrFlags.hdrLen = sizeof(TcpHdr) / 4;
+  tcpHdr->hdrFlags.flags = TCP_FLAG_RST | TCP_FLAG_ACK;
+  tcpHdr->hdrFlags.all = solveEndian16(tcpHdr->hdrFlags.all);
+  tcpHdr->window = 0;
+  tcpHdr->pseudoChecksum = 0;
+  tcpHdr->urgentPtr = 0;
+  tcpHdr->pseudoChecksum = checksumPseudo(&netifIpAddr,
+                                          remoteIp,
+                                          NET_PROTOCOL_TCP,
+                                          (uint16_t *)packet->data,
+                                          packet->size);
+  tcpHdr->pseudoChecksum = (tcpHdr->pseudoChecksum == 0) ? 0xFFFF : tcpHdr->pseudoChecksum;
+
+  return sendIpPacketTo(NET_PROTOCOL_TCP, remoteIp, packet);
+}
+
+void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
+  printf("parseRecvedTcpPacket!\n");
+  TcpHdr *tcpHdr = (TcpHdr *)packet->data;
+  uint16_t preChecksum;
+  TcpBlk *tcp;
+
+  if (packet->size < sizeof(TcpHdr)) {
+    return;
+  }
+
+  // 计算伪校验和
+  preChecksum = tcpHdr->pseudoChecksum;
+  tcpHdr->pseudoChecksum = 0;
+  // 如果发送方将校验和设置为 0 就跳过
+  if (preChecksum != 0) {
+    uint16_t checksum = checksumPseudo(remoteIp,
+                                      &netifIpAddr,
+                                      NET_PROTOCOL_TCP,
+                                      (uint16_t *)tcpHdr,
+                                      packet->size);
+    checksum = (checksum == 0) ? 0xFFFF : checksum;
+    if (checksum != preChecksum) {
+      return;
+    }
+  }
+
+  // 提前对 tcp 头部数据进行大小端转换
+  tcpHdr->srcPort = solveEndian16(tcpHdr->srcPort);
+  tcpHdr->destPort = solveEndian16(tcpHdr->destPort);
+  tcpHdr->hdrFlags.all = solveEndian16(tcpHdr->hdrFlags.all);
+  tcpHdr->seq = solveEndian32(tcpHdr->seq);
+  tcpHdr->ack = solveEndian32(tcpHdr->ack);
+  tcpHdr->window = solveEndian16(tcpHdr->window);
+
+  tcp = findTcpBlk(remoteIp, tcpHdr->srcPort, tcpHdr->destPort);
+  if (tcp == (TcpBlk *)0) {
+    printf("sendResetTcpPacket!\n");
+    sendResetTcpPacket(tcpHdr->seq + 1, tcpHdr->destPort, remoteIp, tcpHdr->srcPort);
+    return;
+  }
 }
 
 TcpBlk *getTcpBlk(tcpHandler handler) {

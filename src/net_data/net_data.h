@@ -42,6 +42,7 @@ typedef enum NetProtocol {
   NET_PROTOCOL_ARP = 0x0806,
   NET_PROTOCOL_ICMP = 1,
   NET_PROTOCOL_UDP = 17,
+  NET_PROTOCOL_TCP = 6,
 }NetProtocol;
 
 typedef enum NetErr {
@@ -226,6 +227,34 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
 //*************TCP begin*************//
 typedef struct TcpBlk TcpBlk;
 
+#pragma pack(1)
+// tcp 数据包头
+typedef struct TcpHdr {
+  uint16_t srcPort;           // 发送方端口
+  uint16_t destPort;          // 接收方端口
+  uint32_t seq;               // 发送方数据序号
+  uint32_t ack;               // 期望接受的数据序号
+#define TCP_FLAG_FIN  (1 << 0)
+#define TCP_FLAG_SYN  (1 << 1)
+#define TCP_FLAG_RST  (1 << 2)
+#define TCP_FLAG_ACK  (1 << 4)
+  union {
+    struct {
+      uint16_t flags : 6;     // 控制位
+      uint16_t reserved : 6;  // 保留字段
+      uint16_t hdrLen : 4;    // 头部长度
+    };
+    uint16_t all;             // 所有 16 位数据，可用于大小端转换
+  }hdrFlags;
+  uint16_t window;            // 接收方窗口大小
+  uint16_t pseudoChecksum;    // 伪校验和
+  uint16_t urgentPtr;         // 紧急指针
+  // 选项数据
+}TcpHdr;
+#pragma pack()
+
+
+
 // tcp 连接状态
 typedef enum TcpConnState {
   TCP_CONN_CONNECTED,
@@ -254,6 +283,9 @@ struct TcpBlk {
 
 // 初始化 tcp
 void initTcp(void);
+// 处理输入的 tcp 数据包
+void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet);
+
 // 获取一个 tcp 控制块
 TcpBlk *getTcpBlk(tcpHandler handler);
 // 将 tcp 控制块与本地端口绑定
