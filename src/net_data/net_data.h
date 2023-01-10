@@ -11,6 +11,7 @@
 #define ARP_CFG_MAX_RETRY_TIMES       4     // arp 表项 PENDING 状态下请求次数
 #define UDP_CFG_MAX_UDP               20    // udp 控制块数量
 #define TCP_CFG_MAX_TCP               60    // tcp 控制块数量
+#define TCP_CFG_BUF_SIZE              128   // tcp 缓冲区大小
 
 #define NET_MAC_ADDR_SIZE             6     // 以太网 RFC894 Mac 地址字节大小
 #define NET_IPV4_ADDR_SIZE            4     // 以太网 Ipv4 地址字节大小
@@ -231,6 +232,16 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
 
 typedef struct TcpBlk TcpBlk;
 
+// tcp 发送缓冲区
+typedef struct TcpBuf {
+  uint16_t dataCount;                     // 缓冲区已使用部分大小(已发送未收到确认和未发送)
+  uint16_t unAckCount;                    // 已发送但未收到 ack 的数据窗口大小
+  uint16_t front;                         // 数据写入位置
+  uint16_t tail;                          // 队列尾部
+  uint16_t next;                          // 未发送数据起始地址
+  uint8_t data[TCP_CFG_BUF_SIZE];         // 循环数组
+}TcpBuf;
+
 #pragma pack(1)
 // tcp 数据包头
 typedef struct TcpHdr {
@@ -290,10 +301,14 @@ struct TcpBlk {
   uint16_t remotePort;
   IpAddr remoreIp;
   uint32_t nextSeq;           // 下次发送的数据包的序号
+  uint32_t unAckSeq;          // 发送缓冲区中未被确认的数据起始地址
   uint32_t ack;
   uint16_t remoteMss;         // 选项数据
   uint16_t remoteWin;         // 保存收到的数据包中的 window
   tcpHandler handler;
+
+  TcpBuf sendBuf;             // 发送缓冲区
+  TcpBuf recvBuf;             // 接收缓冲区
 };
 
 // 初始化 tcp
@@ -308,6 +323,10 @@ NetErr bindTcpBlk(TcpBlk *tcp, uint16_t localPort);
 NetErr listenTcpBlk(TcpBlk *tcp);
 // 关闭 tcp, 释放控制块
 NetErr closeTcp(TcpBlk *tcp);
+// 向 tcp 发送数据
+int sendDataToTcp(TcpBlk *tcp, uint8_t *data, uint16_t size);
+// 从 tcp 读取数据
+int readDataFromTcp(TcpBlk *tcp, uint8_t *data, uint16_t size);
 //=============TCP end=============//
 
 

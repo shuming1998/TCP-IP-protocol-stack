@@ -10,6 +10,8 @@
 #define ipAddrIsEqualBuf(addr, buf) (memcmp((addr)->array, (buf), NET_IPV4_ADDR_SIZE) == 0)
 #define ipAddrIsEqual(addrLhs, addrRhs) ((addrLhs)->addr == (addrRhs)->addr)
 #define getIpFromBuf(dest, buf) ((dest)->addr = *(uint32_t *)(buf))
+// tcp 最大可发送数据大小
+#define TCP_DATA_MAX_SIZE (NET_CFG_DATA_PACKET_MAX_SIZE - sizeof(EtherHdr) - sizeof(IpHdr) - sizeof(TcpHdr))
 
 // 16 字节本地字节序转网络字节序
 uint16_t solveEndian16(uint16_t v) {
@@ -20,7 +22,6 @@ uint16_t solveEndian16(uint16_t v) {
 	}
   return v;
 }
-
 // 32 字节本地字节序转网络字节序
 uint32_t solveEndian32(uint32_t v) {
 	uint16_t a = 0x1234;
@@ -30,12 +31,10 @@ uint32_t solveEndian32(uint32_t v) {
     uint32_t r_v;
     uint8_t* src = (uint8_t*)&v;
     uint8_t* dest = (uint8_t*)&r_v;
-
     dest[0] = src[3];
     dest[1] = src[2];
     dest[2] = src[1];
     dest[3] = src[0];
-
     return r_v;
   }
 
@@ -634,6 +633,97 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
   return sendIpPacketTo(NET_PROTOCOL_UDP, destIp, packet);
 }
 
+// 初始化发送缓冲区
+static void initTcpBuf(TcpBuf *tcpBuf) {
+  tcpBuf->front = tcpBuf->tail = 0;
+  tcpBuf->dataCount = tcpBuf->unAckCount = 0;
+}
+
+// 获取 tcp 发送缓冲区未使用大小
+static uint16_t getTcpBufFreeSize(TcpBuf *tcpBuf) {
+  return TCP_CFG_BUF_SIZE - tcpBuf->dataCount - tcpBuf->unAckCount;
+}
+
+// 获取当前尚未发送的数据大小
+static uint16_t getTcpBufUnsendSize(TcpBuf *tcpBuf) {
+  return tcpBuf->dataCount - tcpBuf->unAckCount;
+}
+
+// 将数据写入 tcp 发送缓冲区
+static uint16_t writeToTcpBufForSend(TcpBuf *tcpBuf, uint8_t *data, uint16_t size) {
+  // 写入的数据最多不能超过发送缓冲区空闲空间
+  size = min(size, getTcpBufFreeSize(tcpBuf));
+
+  for (int i = 0; i < size; ++i) {
+    tcpBuf->data[tcpBuf->front++] = *data++;
+    if (tcpBuf->front >= TCP_CFG_BUF_SIZE) {
+      tcpBuf->front = 0;
+    }
+  }
+
+  tcpBuf->dataCount += size;
+  return size;
+}
+
+// 将需要发送的数据从发送缓冲区取出到指定位置(数据包 data 中)
+static uint16_t readTcpBufForSend(TcpBuf *tcpBuf, uint8_t *data, uint16_t size) {
+  uint16_t waitForSendSize = tcpBuf->dataCount - tcpBuf->unAckCount;
+  size = min(size, waitForSendSize);
+
+  for (int i = 0; i < size; ++i) {
+    *data++ = tcpBuf->data[tcpBuf->next++];
+    if (tcpBuf->next >= TCP_CFG_BUF_SIZE) {
+      tcpBuf->next = 0;
+    }
+  }
+
+  return size;
+}
+
+// 从 tcp 接收缓冲区中读取数据
+static uint16_t readTcpRecvBuf(TcpBuf *tcpBuf, uint8_t *data, uint16_t size) {
+  size = min(size, tcpBuf->dataCount);
+
+  for (int i = 0; i < size; ++i) {
+    *data++ = tcpBuf->data[tcpBuf->tail++];
+    if (tcpBuf->tail >= TCP_CFG_BUF_SIZE) {
+      tcpBuf->tail = 0;
+    }
+  }
+  tcpBuf->dataCount -= size;
+
+  return size;
+}
+
+// 接收已发送数据的确认后，增加发送缓冲区中已确认的数据量
+static void addTcpBufAckedSize(TcpBuf *tcpBuf, uint16_t size) {
+  tcpBuf->tail += size;
+
+  if (tcpBuf->tail >= TCP_CFG_BUF_SIZE) {
+    tcpBuf->tail = 0;
+  }
+
+  tcpBuf->dataCount -= size;
+  tcpBuf->unAckCount -= size;
+}
+
+// 发送数据后，增加发送缓冲区中未确认的数据量
+static void addTcpBufUnAckedSize(TcpBuf *tcpBuf, uint16_t size) {
+  tcpBuf->unAckCount += size;
+}
+
+// 从收到的 tcp 包中读取数据至 tcp 接收缓冲区
+static uint16_t recvDataFromTcp(TcpBlk *tcp, uint8_t flags, uint8_t *from, uint16_t size) {
+  uint16_t readSize = writeToTcpBufForSend(&tcp->recvBuf, from, size);
+
+  // 实际读取到的数据由接收缓冲区的剩余空间决定
+  tcp->ack += readSize;
+  if (flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) {
+      tcp->ack++;
+  }
+  return readSize;
+}
+
 // 分配空闲的 tcp 控制块
 static TcpBlk *allocTcpBlk(void) {
   TcpBlk *tcp, *end;
@@ -644,11 +734,13 @@ static TcpBlk *allocTcpBlk(void) {
       tcp->localPort = 0;
       tcp->remotePort = 0;
       tcp->remoreIp.addr = 0;
-      tcp->nextSeq = getTcpInitSeq();
+      tcp->nextSeq = tcp->unAckSeq = getTcpInitSeq();
       tcp->ack = 0;
       tcp->remoteMss = TCP_MSS_DEFAULT;
       tcp->remoteWin = TCP_MSS_DEFAULT;
       tcp->handler = (tcpHandler)0;
+      initTcpBuf(&tcp->sendBuf);
+      initTcpBuf(&tcp->recvBuf);
       return tcp;
     }
   }
@@ -717,13 +809,26 @@ static NetErr sendResetTcpPacket(uint32_t remoteAck,
   return sendIpPacketTo(NET_PROTOCOL_TCP, remoteIp, packet);
 }
 
+// 将发送缓冲区中的数据发送出去，尽最大努力发送
 static NetErr sendTcpTo(TcpBlk *tcp, uint8_t flags) {
   NetPacket *packet;
   TcpHdr *tcpHdr;
   NetErr err;
+  uint16_t dataSize = getTcpBufUnsendSize(&tcp->sendBuf);
   uint16_t optSize = (flags & TCP_FLAG_SYN) ? 4 : 0;
 
-  packet = netPacketAllocForSend(sizeof(TcpHdr) + optSize);
+  // 判断对方的可接受窗口 window 大小 以及 对方的限定的 IP 分片大小
+  if (tcp->remoteWin > 0) {
+    dataSize = min(dataSize, tcp->remoteWin);
+    dataSize = min(dataSize, tcp->remoteMss);
+    if (dataSize + optSize > TCP_DATA_MAX_SIZE) {
+      dataSize = TCP_DATA_MAX_SIZE - optSize;
+    }
+  } else if (tcp->remoteWin == 0) {
+    dataSize = 0;
+  }
+
+  packet = netPacketAllocForSend(sizeof(TcpHdr) + optSize + dataSize);
   tcpHdr = (TcpHdr *)packet->data;
   tcpHdr->srcPort = solveEndian16(tcp->localPort);
   tcpHdr->destPort = solveEndian16(tcp->remotePort);
@@ -733,7 +838,7 @@ static NetErr sendTcpTo(TcpBlk *tcp, uint8_t flags) {
   tcpHdr->hdrFlags.hdrLen = (optSize + sizeof(TcpHdr)) / 4;
   tcpHdr->hdrFlags.flags = flags;
   tcpHdr->hdrFlags.all = solveEndian16(tcpHdr->hdrFlags.all);
-  tcpHdr->window = 1024;
+  tcpHdr->window = solveEndian16(getTcpBufFreeSize(&tcp->recvBuf));
   tcpHdr->pseudoChecksum = 0;
   tcpHdr->urgentPtr = 0;
   if (flags & TCP_FLAG_SYN) {
@@ -743,6 +848,9 @@ static NetErr sendTcpTo(TcpBlk *tcp, uint8_t flags) {
     optData[1] = 4;
     *(uint16_t *)(optData + 2) = solveEndian16(TCP_MSS_DEFAULT);
   }
+
+  readTcpBufForSend(&tcp->sendBuf, packet->data + optSize + sizeof(TcpHdr), dataSize);
+
   tcpHdr->pseudoChecksum = checksumPseudo(&netifIpAddr,
                                           &tcp->remoreIp,
                                           NET_PROTOCOL_TCP,
@@ -756,6 +864,11 @@ static NetErr sendTcpTo(TcpBlk *tcp, uint8_t flags) {
   }
 
   // 发送完毕后，调整 tcp 头部中的数据
+  tcp->remoteWin -= dataSize;
+  tcp->nextSeq += dataSize;
+  addTcpBufUnAckedSize(&tcp->sendBuf, dataSize);
+
+
   // tcp->remoteWin -=
   if (flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) {
     // FIN 占用一个序号
@@ -806,10 +919,10 @@ static void acceptTcpProcess(TcpBlk *listenTcp, IpAddr *remoteIp, TcpHdr *tcpHdr
     newTcp->handler = listenTcp->handler;
     newTcp->remotePort = tcpHdr->srcPort;
     newTcp->remoreIp.addr = remoteIp->addr;
-    newTcp->ack = ack;                        // 希望对方下次发来的序号
-    newTcp->nextSeq = getTcpInitSeq();        // 设置初始序号
+    newTcp->ack = ack;                                        // 希望对方下次发来的序号
+    newTcp->nextSeq = newTcp->unAckSeq = getTcpInitSeq();     // 设置初始序号
     newTcp->remoteWin = tcpHdr->window;
-    readTcpMss(newTcp, tcpHdr);               // 读取对方选项数据中的 mss 值
+    readTcpMss(newTcp, tcpHdr);                               // 读取对方选项数据中的 mss 值
 
     // 动作： 发送 syn + ack 报文
     err = sendTcpTo(newTcp, TCP_FLAG_SYN | TCP_FLAG_ACK);
@@ -827,6 +940,7 @@ void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
   TcpHdr *tcpHdr = (TcpHdr *)packet->data;
   TcpBlk *tcp;
   uint16_t preChecksum;
+  uint16_t readSize;
 
   if (packet->size < sizeof(TcpHdr)) {
     return;
@@ -879,23 +993,51 @@ void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
   }
 
   // 收到自己想要的报文，先移除包头
-  rmHdr(packet, tcpHdr->hdrFlags.hdrLen);
+  rmHdr(packet, tcpHdr->hdrFlags.hdrLen * 4);
   // 进入状态机
   switch (tcp->state) {
     // 收到第二次握手的报文
     case TCP_STATE_SYN_RCVD:
       if (tcpHdr->hdrFlags.flags & TCP_FLAG_ACK) {
+        // 收到 ack，连接成功
+        tcp->unAckSeq++;  // syn 会占用一个序号
         tcp->state = TCP_STATE_ESTABLISHED;
         tcp->handler(tcp, TCP_CONN_CONNECTED);
       }
       break;
     // 已建立连接，可以处理数据包
     case TCP_STATE_ESTABLISHED:
-      if (tcpHdr->hdrFlags.flags & TCP_FLAG_FIN) {
-        // 如果收到客户端主动关闭放发来的报文，服务器直接发送 FIN + ACK，跳过 CLOSE-WAIT 直接进入 LAST-ACK
-        tcp->state = TCP_STATE_LAST_ACK;
-        tcp->ack++; // FIN 标志位占一个序号
-        sendTcpTo(tcp, TCP_FLAG_FIN | TCP_FLAG_ACK);
+      // 收到的可能是数据，也可能是 FIN
+      if (tcpHdr->hdrFlags.flags & (TCP_FLAG_FIN | TCP_FLAG_ACK)) {
+        // 首先处理 ack，表示之前发送数据已被接收
+        // 1.远程 ack >= unAckSeq，即有部分数据被远端接收确认
+        // 2.远程 ack < unAckSeq，即之前重发数据的 ack，不做处理
+        if (tcpHdr->hdrFlags.flags & TCP_FLAG_ACK) {
+          if ((tcp->unAckSeq < tcpHdr->ack) && (tcpHdr->ack <= tcp->nextSeq)) {
+            uint16_t currAckSize = tcpHdr->ack - tcp->unAckSeq;
+            addTcpBufAckedSize(&tcp->sendBuf, currAckSize);
+            tcp->unAckSeq += currAckSize;
+          }
+        }
+
+        // 然后读取当前包中的数据，里面可能是携带有数据的，即便是 FIN，也可能是带有数据
+        readSize = recvDataFromTcp(tcp, (uint8_t)tcpHdr->hdrFlags.flags, packet->data, packet->size);
+
+        if (tcpHdr->hdrFlags.flags & TCP_FLAG_FIN) {
+          // 如果收到客户端主动关闭放发来的报文，服务器直接发送 FIN + ACK，跳过 CLOSE-WAIT 直接进入 LAST-ACK
+          tcp->state = TCP_STATE_LAST_ACK;
+          tcp->ack++; // FIN 标志位占一个序号
+          sendTcpTo(tcp, TCP_FLAG_FIN | TCP_FLAG_ACK);
+        } else if (readSize) {
+          // 非 FIN 报文，但从 tcp 包中读取到了数据，发送 ack 响应(有可能只读了一部分)
+          sendTcpTo(tcp, TCP_FLAG_ACK);
+          tcp->handler(tcp, TCP_CONN_DATA_RECV);
+        } else if (getTcpBufUnsendSize(&tcp->sendBuf)) {
+          // 或者看看有没有数据要发，有的话，同时发数据即 ack
+          // 没有收到数据，可能是对方发来的 ACK。此时，有数据有就发数据，没数据就不理会
+          sendTcpTo(tcp, TCP_FLAG_ACK);
+        }
+        // 其它情况，即对方只是简单的一个ack,不发送任何响应处理
       }
       break;
     case TCP_STATE_FIN_WAIT_1:
@@ -954,6 +1096,25 @@ NetErr listenTcpBlk(TcpBlk *tcp) {
   tcp->state = TCP_STATE_LISTEN;
 
   return NET_ERROR_OK;
+}
+
+int sendDataToTcp(TcpBlk *tcp, uint8_t *data, uint16_t size) {
+  int sendSize;
+
+  if (tcp->state != TCP_STATE_ESTABLISHED) {
+    return -1;
+  }
+
+  sendSize = writeToTcpBufForSend(&tcp->sendBuf, data, size);
+  if (sendSize) {
+    sendTcpTo(tcp, TCP_FLAG_ACK);
+  }
+
+  return sendSize;
+}
+
+int readDataFromTcp(TcpBlk *tcp, uint8_t *data, uint16_t size) {
+  return readTcpRecvBuf(&tcp->recvBuf, data, size);
 }
 
 NetErr closeTcp(TcpBlk *tcp) {
