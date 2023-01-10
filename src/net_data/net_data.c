@@ -21,7 +21,8 @@ static NetPacket sendPacket;                    // 接收缓冲
 static NetPacket recvPacket;                    // 发送缓冲
 static ArpEntry arpEntry;                       // arp 单表项
 static net_time_t  arpTimer;                    // arp 定时查询时间
-static UdpBlk udpSocket[UDP_CFG_MAX_UDP];
+static UdpBlk udpSocket[UDP_CFG_MAX_UDP];       // udp 控制块
+static TcpBlk tcpSocket[TCP_CFG_MAX_TCP];       // tcp 控制块
 
 const net_time_t getNetRunsTime(void) {
   return (net_time_t)(clock() / CLOCKS_PER_SEC);
@@ -266,15 +267,17 @@ void queryArpEntry() {
   if (checkArpEntryTtl(&arpTimer, ARP_TIMER_PERIOD)) {
     printf("time to query arp: %d\n", arpTimer);
     switch (arpEntry.state) {
-      case ARP_ENTRY_FREE:
-        arpMakeRequest(&arpEntry.ipAddr);
-        arpEntry.state = ARP_ENTRY_OK;
-        arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;
-        arpEntry.retryCnt = ARP_CFG_MAX_RETRY_TIMES;
-        break;
+      // case ARP_ENTRY_FREE:
+      //   uint8_t senderIp[NET_IPV4_ADDR_SIZE] = {192, 168, 1, 7};
+      //   memcpy(arpEntry.ipAddr.array, senderIp, NET_IPV4_ADDR_SIZE);
+      //   arpMakeRequest(&arpEntry.ipAddr);
+      //   arpEntry.state = ARP_ENTRY_OK;
+      //   arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;
+      //   arpEntry.retryCnt = ARP_CFG_MAX_RETRY_TIMES;
+      //   break;
       case ARP_ENTRY_OK:
         if (--arpEntry.ttl == 0) {
-          printf("ARP OK: arpEntry.ttl = %d\n", arpEntry.ttl);
+          printf("ARP OK: arpEntry.ttl: 0\n");
           arpMakeRequest(&arpEntry.ipAddr);         // arp 表项超时，重新获取该超时的 arp 表项
           arpEntry.state = ARP_ENTRY_PENDING;       // 更新 arp 表项状态为：正在查询
           arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL; // 设置 PENDING 状态的 arp 表项响应包的超时时间
@@ -282,12 +285,12 @@ void queryArpEntry() {
         break;
       case ARP_ENTRY_PENDING:
         if (--arpEntry.ttl == 0) {                  // 判断 PENDING 状态 arp 包的响应时间是否超时
-          printf("ARP_ENTRY_PENDING: arpEntry.ttl = %d!\n", arpEntry.ttl);
+          printf("ARP_ENTRY_PENDING: arpEntry.ttl: %d!\n", arpEntry.ttl);
           if (arpEntry.retryCnt-- == 0) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
-            printf("ARP PENDING: ttl = 0 and retryCnt = %d\n", arpEntry.retryCnt);
+            printf("ARP PENDING: ttl: 0 & retryCnt: %d\n", arpEntry.retryCnt);
             arpEntry.state = ARP_ENTRY_FREE;
           } else {                                  // 响应事件超时，且剩余请求次数，尝试重新获取 arp 响应包
-            printf("ARP PENDING: ttl == 0 but retryCnt = %d\n", arpEntry.retryCnt);
+            printf("ARP PENDING: ttl: 0 & retryCnt: %d\n", arpEntry.retryCnt);
             arpMakeRequest(&arpEntry.ipAddr);
             arpEntry.state = ARP_ENTRY_PENDING;
             arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;
@@ -494,8 +497,8 @@ UdpBlk *getUdpBlk(udpHandler handler) {
   return (UdpBlk *)0;
 }
 
-void freeUdpBlk(UdpBlk *udpBlk) {
-  udpBlk->state = UDP_STATE_FREE;
+void freeUdpBlk(UdpBlk *udp) {
+  udp->state = UDP_STATE_FREE;
 }
 
 UdpBlk *findUdpBlk(uint16_t port) {
@@ -601,12 +604,100 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
   return sendIpPacketTo(NET_PROTOCOL_UDP, destIp, packet);
 }
 
+// 分配空闲的 tcp 控制块
+static TcpBlk *allocTcpBlk(void) {
+  TcpBlk *tcp, *end;
+
+  for (tcp = tcpSocket, end = tcpSocket + TCP_CFG_MAX_TCP; tcp < end; ++tcp) {
+    if (tcp->state == TCP_STATE_FREE) {
+      tcp->localPort = 0;
+      tcp->remotePort = 0;
+      tcp->remoreIp.addr = 0;
+      tcp->handler = (tcpHandler)0;
+      return tcp;
+    }
+  }
+
+  return (TcpBlk *)0;
+}
+
+// 释放 tcp 控制块
+static void freeTcp(TcpBlk *tcp) {
+  tcp->state = TCP_STATE_FREE;
+}
+
+// 查找 tcp 控制块
+static TcpBlk *findTcpBlk(IpAddr *remoteIp, uint16_t remotePort, uint16_t localPort) {
+  TcpBlk *tcp, *end;
+  TcpBlk *listen = (TcpBlk *)0;
+
+  for (tcp = tcpSocket, end = &tcpSocket[TCP_CFG_MAX_TCP]; tcp < end; ++tcp) {
+    if ((tcp->state == TCP_STATE_FREE) || (tcp->localPort != localPort)) {
+      continue;
+    }
+
+    if ((ipAddrIsEqual(remoteIp, &tcp->remoreIp)) && (remotePort == tcp->remotePort)) {
+      return tcp;
+    }
+
+    // 没找到指定的 tcp 控制块，但找到了 liste 状态的，也返回
+    if (tcp->state == TCP_STATE_LISTEN) {
+      listen = tcp;
+    }
+  }
+
+  return listen;
+}
+
+void initTcp() {
+  memset(tcpSocket, 0, sizeof(tcpSocket));
+}
+
+TcpBlk *getTcpBlk(tcpHandler handler) {
+  TcpBlk *tcp = allocTcpBlk();
+
+  if (!tcp) {
+    return (TcpBlk *)0;
+  }
+
+  tcp->state = TCP_STATE_CLOSED;
+  tcp->handler = handler;
+
+  return tcp;
+}
+
+NetErr bindTcpBlk(TcpBlk *tcp, uint16_t localPort) {
+  TcpBlk *cur, *end;
+
+  for (cur = tcpSocket, end = &tcpSocket[TCP_CFG_MAX_TCP]; cur < end; ++cur) {
+    if ((cur != tcp) && (cur->localPort == localPort)) {
+      return NET_ERR_PORT_USED;
+    }
+  }
+  tcp->localPort = localPort;
+
+  return NET_ERROR_OK;
+}
+
+NetErr listenTcpBlk(TcpBlk *tcp) {
+  tcp->state = TCP_STATE_LISTEN;
+
+  return NET_ERROR_OK;
+}
+
+NetErr freeTcpBlk(TcpBlk *tcp) {
+  freeTcp(tcp);
+
+  return NET_ERROR_OK;
+}
+
 void initNet(void) {
   initEthernet();
   initArp();
   initIp();
   initIcmp();
   initUpd();
+  initTcp();
 }
 
 void queryNet(void) {

@@ -9,7 +9,8 @@
 #define ARP_CFG_ENTRY_OK_TTL          (5)   // arp 表项超时时间(秒)
 #define ARP_CFG_ENTRY_PENDING_TTL     (1)   // arp 表项 PENDING 超时时间(秒)
 #define ARP_CFG_MAX_RETRY_TIMES       4     // arp 表项 PENDING 状态下请求次数
-#define UDP_CFG_MAX_UDP               10    //
+#define UDP_CFG_MAX_UDP               20    // udp 控制块数量
+#define TCP_CFG_MAX_TCP               60    // tcp 控制块数量
 
 #define NET_MAC_ADDR_SIZE             6     // 以太网 RFC894 Mac 地址字节大小
 #define NET_IPV4_ADDR_SIZE            4     // 以太网 Ipv4 地址字节大小
@@ -210,7 +211,7 @@ void initUpd(void);
 // 获取一个未使用的 udp 控制块
 UdpBlk *getUdpBlk(udpHandler handler);
 // 归还已使用完毕的 udp 控制块
-void freeUdpBlk(UdpBlk *udpBlk);
+void freeUdpBlk(UdpBlk *udp);
 // 查找 udp 控制块，判断收到的数据包应该传给哪个回调函数处理. port 为目标端口
 UdpBlk *findUdpBlk(uint16_t port);
 // 关联指定 udpBlk 与 localPort
@@ -223,7 +224,44 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
 
 
 //*************TCP begin*************//
+typedef struct TcpBlk TcpBlk;
 
+// tcp 连接状态
+typedef enum TcpConnState {
+  TCP_CONN_CONNECTED,
+  TCP_CONN_DATA_RECV,
+  TCP_CONN_CLOSED,
+}TcpConnState;
+
+// tcp 协议状态机
+typedef enum TcpState {
+  TCP_STATE_FREE,
+  TCP_STATE_CLOSED,
+  TCP_STATE_LISTEN,
+}TcpState;
+
+typedef NetErr (* tcpHandler)(TcpBlk *tcp, TcpConnState event);
+
+// tcp 控制块
+struct TcpBlk {
+  TcpState state;
+  uint16_t localPort;
+  uint16_t remotePort;
+  IpAddr remoreIp;
+
+  tcpHandler handler;
+};
+
+// 初始化 tcp
+void initTcp(void);
+// 获取一个 tcp 控制块
+TcpBlk *getTcpBlk(tcpHandler handler);
+// 将 tcp 控制块与本地端口绑定
+NetErr bindTcpBlk(TcpBlk *tcp, uint16_t localPort);
+// 设置监听状态
+NetErr listenTcpBlk(TcpBlk *tcp);
+// 归还已使用完毕的 tcp 控制块
+NetErr freeTcpBlk(TcpBlk *tcp);
 //=============TCP end=============//
 
 
