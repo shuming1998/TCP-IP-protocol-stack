@@ -225,30 +225,34 @@ NetErr sendUdpTo(UdpBlk *udp, IpAddr *destIp, uint16_t destPort, NetPacket *pack
 
 
 //*************TCP begin*************//
+#define TCP_KIND_END          0
+#define TCP_KIND_MSS          2
+#define TCP_MSS_DEFAULT       1460
+
 typedef struct TcpBlk TcpBlk;
 
 #pragma pack(1)
 // tcp 数据包头
 typedef struct TcpHdr {
-  uint16_t srcPort;           // 发送方端口
-  uint16_t destPort;          // 接收方端口
-  uint32_t seq;               // 发送方数据序号
-  uint32_t ack;               // 期望接受的数据序号
+  uint16_t srcPort;                     // 发送方端口
+  uint16_t destPort;                    // 接收方端口
+  uint32_t seq;                         // 发送方数据序号
+  uint32_t ack;                         // 期望接受的数据序号
 #define TCP_FLAG_FIN  (1 << 0)
 #define TCP_FLAG_SYN  (1 << 1)
 #define TCP_FLAG_RST  (1 << 2)
 #define TCP_FLAG_ACK  (1 << 4)
   union {
     struct {
-      uint16_t flags : 6;     // 控制位
-      uint16_t reserved : 6;  // 保留字段
-      uint16_t hdrLen : 4;    // 头部长度
+      uint16_t flags : 6;               // 控制位
+      uint16_t reserved : 6;            // 保留字段
+      uint16_t hdrLen : 4;              // 头部长度
     };
-    uint16_t all;             // 所有 16 位数据，可用于大小端转换
+    uint16_t all;                       // 所有 16 位数据，可用于大小端转换
   }hdrFlags;
-  uint16_t window;            // 接收方窗口大小
-  uint16_t pseudoChecksum;    // 伪校验和
-  uint16_t urgentPtr;         // 紧急指针
+  uint16_t window;                      // 接收方窗口大小
+  uint16_t pseudoChecksum;              // 伪校验和
+  uint16_t urgentPtr;                   // 紧急指针
   // 选项数据
 }TcpHdr;
 #pragma pack()
@@ -264,12 +268,14 @@ typedef enum TcpConnState {
 
 // tcp 协议状态机
 typedef enum TcpState {
-  TCP_STATE_FREE,
-  TCP_STATE_CLOSED,
-  TCP_STATE_LISTEN,
+  TCP_STATE_FREE,           // 空闲状态
+  TCP_STATE_CLOSED,         // 关闭状态
+  TCP_STATE_LISTEN,         // 监听中
+  TCP_STATE_SYN_RCVD,      // 已收到 syn
+  TCP_STATE_ESTABLISHED,    // 已建立连接
 }TcpState;
 
-typedef NetErr (* tcpHandler)(TcpBlk *tcp, TcpConnState event);
+typedef NetErr(* tcpHandler)(TcpBlk *tcp, TcpConnState event);
 
 // tcp 控制块
 struct TcpBlk {
@@ -277,7 +283,10 @@ struct TcpBlk {
   uint16_t localPort;
   uint16_t remotePort;
   IpAddr remoreIp;
-
+  uint32_t nextSeq;           // 下次发送的数据包的序号
+  uint32_t ack;
+  uint16_t remoteMss;         // 选项数据
+  uint16_t remoteWin;         // 保存收到的数据包中的 window
   tcpHandler handler;
 };
 
@@ -285,7 +294,6 @@ struct TcpBlk {
 void initTcp(void);
 // 处理输入的 tcp 数据包
 void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet);
-
 // 获取一个 tcp 控制块
 TcpBlk *getTcpBlk(tcpHandler handler);
 // 将 tcp 控制块与本地端口绑定

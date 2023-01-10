@@ -5,6 +5,7 @@
 #include <string.h>
 
 #define min(a, b) ((a) > (b) ? (b) : (a))
+#define getTcpInitSeq() ((rand() << 16) + rand()) // 生成 32 位的随机数： 高 16 位 + 低 16 位
 #define convertOrder16(num) ((((num) & 0XFF) << 8) | (((num) >> 8) & 0xFF))
 #define ipAddrIsEqualBuf(addr, buf) (memcmp((addr)->array, (buf), NET_IPV4_ADDR_SIZE) == 0)
 #define ipAddrIsEqual(addrLhs, addrRhs) ((addrLhs)->addr == (addrRhs)->addr)
@@ -142,7 +143,7 @@ static NetErr sendByEthernet(IpAddr *destIp, NetPacket *packet) {
   NetErr err;
   uint8_t *macAddr;
 
-  if ((err = arpResolve(destIp, &macAddr) == NET_ERROR_OK)) {
+  if (((err = arpResolve(destIp, &macAddr)) == NET_ERROR_OK)) {
     return sendEthernetTo(NET_PROTOCOL_IP, macAddr, packet);
   }
 
@@ -408,6 +409,9 @@ void parseRecvedIpPacket(NetPacket *packet) {
       break;
     case NET_PROTOCOL_TCP:
       printf("NET_PROTOCOL_TCP\n");
+      // 不含数据的 TCP 包： EtherHdr(14) + IpHdr(20) + TcpHdr(20) = 54
+      // 以太网规范：最小包 >= 14 + 46 = 60 ，为了避免填充的 6 字节带来的影响(如校验和)，需要将其截断
+      truncatePacket(packet, totalSize);
       rmHdr(packet, hdrSize);
       parseRecvedTcpPacket(&srcIp, packet);
       break;
@@ -636,9 +640,14 @@ static TcpBlk *allocTcpBlk(void) {
 
   for (tcp = tcpSocket, end = tcpSocket + TCP_CFG_MAX_TCP; tcp < end; ++tcp) {
     if (tcp->state == TCP_STATE_FREE) {
+      tcp->state = TCP_STATE_CLOSED;
       tcp->localPort = 0;
       tcp->remotePort = 0;
       tcp->remoreIp.addr = 0;
+      tcp->nextSeq = getTcpInitSeq();
+      tcp->ack = 0;
+      tcp->remoteMss = TCP_MSS_DEFAULT;
+      tcp->remoteWin = TCP_MSS_DEFAULT;
       tcp->handler = (tcpHandler)0;
       return tcp;
     }
@@ -657,12 +666,12 @@ static TcpBlk *findTcpBlk(IpAddr *remoteIp, uint16_t remotePort, uint16_t localP
   TcpBlk *tcp, *end;
   TcpBlk *listen = (TcpBlk *)0;
 
-  for (tcp = tcpSocket, end = &tcpSocket[TCP_CFG_MAX_TCP]; tcp < end; ++tcp) {
+  for (tcp = tcpSocket, end = tcpSocket + TCP_CFG_MAX_TCP; tcp < end; ++tcp) {
     if ((tcp->state == TCP_STATE_FREE) || (tcp->localPort != localPort)) {
       continue;
     }
 
-    if ((ipAddrIsEqual(remoteIp, &tcp->remoreIp)) && (remotePort == tcp->remotePort)) {
+    if (ipAddrIsEqual(remoteIp, &tcp->remoreIp) && (remotePort == tcp->remotePort)) {
       return tcp;
     }
 
@@ -708,11 +717,108 @@ static NetErr sendResetTcpPacket(uint32_t remoteAck,
   return sendIpPacketTo(NET_PROTOCOL_TCP, remoteIp, packet);
 }
 
+static NetErr sendTcpTo(TcpBlk *tcp, uint8_t flags) {
+  NetPacket *packet;
+  TcpHdr *tcpHdr;
+  NetErr err;
+
+  packet = netPacketAllocForSend(sizeof(TcpHdr));
+  tcpHdr = (TcpHdr *)packet->data;
+  tcpHdr->srcPort = solveEndian16(tcp->localPort);
+  tcpHdr->destPort = solveEndian16(tcp->remotePort);
+  tcpHdr->seq = solveEndian32(tcp->nextSeq);
+  tcpHdr->ack = solveEndian32(tcp->ack);
+  tcpHdr->hdrFlags.all = 0;
+  tcpHdr->hdrFlags.hdrLen = sizeof(TcpHdr) / 4;
+  tcpHdr->hdrFlags.flags = flags;
+  tcpHdr->hdrFlags.all = solveEndian16(tcpHdr->hdrFlags.all);
+  tcpHdr->window = 1024;
+  tcpHdr->pseudoChecksum = 0;
+  tcpHdr->urgentPtr = 0;
+  tcpHdr->pseudoChecksum = checksumPseudo(&netifIpAddr,
+                                          &tcp->remoreIp,
+                                          NET_PROTOCOL_TCP,
+                                          (uint16_t *)packet->data,
+                                          packet->size);
+  tcpHdr->pseudoChecksum = (tcpHdr->pseudoChecksum == 0) ? 0xFFFF : tcpHdr->pseudoChecksum;
+
+  err = sendIpPacketTo(NET_PROTOCOL_TCP, &tcp->remoreIp, packet);
+  if (err < 0) {
+    return err;
+  }
+
+  // 发送完毕后，调整 tcp 头部中的数据
+  // tcp->remoteWin -=
+  if (flags & (TCP_FLAG_SYN | TCP_FLAG_FIN)) {
+    // FIN 占用一个序号
+    tcp->nextSeq++;
+  }
+
+  return NET_ERROR_OK;
+}
+
+// 将 tcp 头部中的选项数据 mss 读取到 tcp 控制块的 remoteMss 中
+static void readTcpMss(TcpBlk *tcp, TcpHdr *tcpHdr) {
+  uint16_t optLen = tcpHdr->hdrFlags.hdrLen * 4 - sizeof(TcpHdr);
+
+  // 如果对方没有发送选项数据，设置一个默认值
+  if (0 == optLen) {
+    tcp->remoteMss = TCP_MSS_DEFAULT;
+  } else {
+    uint8_t *optData = (uint8_t *)tcpHdr + sizeof(TcpHdr);
+    uint8_t *optDataEnd = optData + optLen;
+
+    while ((*optData != TCP_KIND_END) && (optData < optDataEnd)) {
+      if ((*optData++ == TCP_KIND_MSS) && (*optData++ == 4)) {
+        tcp->remoteMss = solveEndian16(*(uint16_t *)optData);
+        return;
+      }
+    }
+  }
+}
+
+// 根据监听状态的 tcp 控制块，创建用于处理连接请求的 tcp 控制块
+static void acceptTcpProcess(TcpBlk *listenTcp, IpAddr *remoteIp, TcpHdr *tcpHdr) {
+  uint16_t hdrFlgs = tcpHdr->hdrFlags.all;
+
+  // 判断是否为第一次握手
+  if (hdrFlgs & TCP_FLAG_SYN) {
+    printf("第一次握手!\n");
+    NetErr err;
+    uint32_t ack = tcpHdr->seq + 1;
+
+    TcpBlk *newTcp = allocTcpBlk();
+    if (!newTcp) {
+      return;
+    }
+
+    // 状态为：已收到 syn，即将发送 syn + ack
+    newTcp->state = TCP_STATE_SYN_RCVD;
+    newTcp->localPort = listenTcp->localPort;
+    newTcp->handler = listenTcp->handler;
+    newTcp->remotePort = tcpHdr->srcPort;
+    newTcp->remoreIp.addr = remoteIp->addr;
+    newTcp->ack = ack;                        // 希望对方下次发来的序号
+    newTcp->nextSeq = getTcpInitSeq();        // 设置初始序号
+    newTcp->remoteWin = tcpHdr->window;
+    readTcpMss(newTcp, tcpHdr);               // 读取对方选项数据中的 mss 值
+
+    // 动作： 发送 syn + ack 报文
+    err = sendTcpTo(newTcp, TCP_FLAG_SYN | TCP_FLAG_ACK);
+    if (err < 0) {
+      freeTcpBlk(newTcp);
+      return;
+    }
+  } else {
+    sendResetTcpPacket(tcpHdr->seq, listenTcp->localPort, remoteIp, tcpHdr->srcPort);
+  }
+}
+
 void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
   printf("parseRecvedTcpPacket!\n");
   TcpHdr *tcpHdr = (TcpHdr *)packet->data;
-  uint16_t preChecksum;
   TcpBlk *tcp;
+  uint16_t preChecksum;
 
   if (packet->size < sizeof(TcpHdr)) {
     return;
@@ -747,6 +853,38 @@ void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
     printf("sendResetTcpPacket!\n");
     sendResetTcpPacket(tcpHdr->seq + 1, tcpHdr->destPort, remoteIp, tcpHdr->srcPort);
     return;
+  }
+
+  tcp->remoteWin = tcpHdr->window;
+
+  if (tcp->state == TCP_STATE_LISTEN) {
+    // 处理接收的 tcp 报文，创建并发送回应 tcp 报文
+    acceptTcpProcess(tcp, remoteIp, tcpHdr);
+    return;
+  }
+
+  // 收到 syn + ack 报文，处理即将发送的第三次握手的 ack 报文
+  // 如果报文不是自己想要的，直接发送重置报文
+  if (tcpHdr->seq != tcp->ack) {
+    sendResetTcpPacket(tcpHdr->seq + 1, tcpHdr->destPort, remoteIp, tcpHdr->srcPort);
+    return;
+  }
+
+  // 收到自己想要的报文，先移除包头
+  rmHdr(packet, tcpHdr->hdrFlags.hdrLen);
+  // 进入状态机
+  switch (tcp->state) {
+    // 收到第二次握手的报文
+    case TCP_STATE_SYN_RCVD :
+      if (tcpHdr->hdrFlags.flags & TCP_FLAG_ACK) {
+        tcp->state = TCP_STATE_ESTABLISHED;
+        tcp->handler(tcp, TCP_CONN_CONNECTED);
+      }
+      break;
+    // 已建立连接，可以处理数据包
+    case TCP_STATE_ESTABLISHED:
+      printf("tcp connection ok\n");
+      break;
   }
 }
 
@@ -795,6 +933,7 @@ void initNet(void) {
   initIcmp();
   initUpd();
   initTcp();
+  srand(getNetRunsTime());
 }
 
 void queryNet(void) {
