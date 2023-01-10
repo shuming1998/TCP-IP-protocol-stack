@@ -271,8 +271,14 @@ typedef enum TcpState {
   TCP_STATE_FREE,           // 空闲状态
   TCP_STATE_CLOSED,         // 关闭状态
   TCP_STATE_LISTEN,         // 监听中
-  TCP_STATE_SYN_RCVD,      // 已收到 syn
+  TCP_STATE_SYN_RCVD,       // 已收到 syn
   TCP_STATE_ESTABLISHED,    // 已建立连接
+  TCP_STATE_FIN_WAIT_1,
+  TCP_STATE_FIN_WAIT_2,
+  TCP_STATE_CLOSING,
+  TCP_STATE_TIMED_WAIT,
+  TCP_STATE_CLOSE_WAIT,
+  TCP_STATE_LAST_ACK,
 }TcpState;
 
 typedef NetErr(* tcpHandler)(TcpBlk *tcp, TcpConnState event);
@@ -300,8 +306,8 @@ TcpBlk *getTcpBlk(tcpHandler handler);
 NetErr bindTcpBlk(TcpBlk *tcp, uint16_t localPort);
 // 设置监听状态
 NetErr listenTcpBlk(TcpBlk *tcp);
-// 归还已使用完毕的 tcp 控制块
-NetErr freeTcpBlk(TcpBlk *tcp);
+// 关闭 tcp, 释放控制块
+NetErr closeTcp(TcpBlk *tcp);
 //=============TCP end=============//
 
 

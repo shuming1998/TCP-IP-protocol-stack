@@ -721,20 +721,28 @@ static NetErr sendTcpTo(TcpBlk *tcp, uint8_t flags) {
   NetPacket *packet;
   TcpHdr *tcpHdr;
   NetErr err;
+  uint16_t optSize = (flags & TCP_FLAG_SYN) ? 4 : 0;
 
-  packet = netPacketAllocForSend(sizeof(TcpHdr));
+  packet = netPacketAllocForSend(sizeof(TcpHdr) + optSize);
   tcpHdr = (TcpHdr *)packet->data;
   tcpHdr->srcPort = solveEndian16(tcp->localPort);
   tcpHdr->destPort = solveEndian16(tcp->remotePort);
   tcpHdr->seq = solveEndian32(tcp->nextSeq);
   tcpHdr->ack = solveEndian32(tcp->ack);
   tcpHdr->hdrFlags.all = 0;
-  tcpHdr->hdrFlags.hdrLen = sizeof(TcpHdr) / 4;
+  tcpHdr->hdrFlags.hdrLen = (optSize + sizeof(TcpHdr)) / 4;
   tcpHdr->hdrFlags.flags = flags;
   tcpHdr->hdrFlags.all = solveEndian16(tcpHdr->hdrFlags.all);
   tcpHdr->window = 1024;
   tcpHdr->pseudoChecksum = 0;
   tcpHdr->urgentPtr = 0;
+  if (flags & TCP_FLAG_SYN) {
+    // 写入附加数据
+    uint8_t *optData = packet->data + sizeof(TcpHdr);
+    optData[0] = TCP_KIND_MSS;
+    optData[1] = 4;
+    *(uint16_t *)(optData + 2) = solveEndian16(TCP_MSS_DEFAULT);
+  }
   tcpHdr->pseudoChecksum = checksumPseudo(&netifIpAddr,
                                           &tcp->remoreIp,
                                           NET_PROTOCOL_TCP,
@@ -806,7 +814,7 @@ static void acceptTcpProcess(TcpBlk *listenTcp, IpAddr *remoteIp, TcpHdr *tcpHdr
     // 动作： 发送 syn + ack 报文
     err = sendTcpTo(newTcp, TCP_FLAG_SYN | TCP_FLAG_ACK);
     if (err < 0) {
-      freeTcpBlk(newTcp);
+      closeTcp(newTcp);
       return;
     }
   } else {
@@ -875,7 +883,7 @@ void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
   // 进入状态机
   switch (tcp->state) {
     // 收到第二次握手的报文
-    case TCP_STATE_SYN_RCVD :
+    case TCP_STATE_SYN_RCVD:
       if (tcpHdr->hdrFlags.flags & TCP_FLAG_ACK) {
         tcp->state = TCP_STATE_ESTABLISHED;
         tcp->handler(tcp, TCP_CONN_CONNECTED);
@@ -883,7 +891,35 @@ void parseRecvedTcpPacket(IpAddr *remoteIp, NetPacket *packet) {
       break;
     // 已建立连接，可以处理数据包
     case TCP_STATE_ESTABLISHED:
-      printf("tcp connection ok\n");
+      if (tcpHdr->hdrFlags.flags & TCP_FLAG_FIN) {
+        // 如果收到客户端主动关闭放发来的报文，服务器直接发送 FIN + ACK，跳过 CLOSE-WAIT 直接进入 LAST-ACK
+        tcp->state = TCP_STATE_LAST_ACK;
+        tcp->ack++; // FIN 标志位占一个序号
+        sendTcpTo(tcp, TCP_FLAG_FIN | TCP_FLAG_ACK);
+      }
+      break;
+    case TCP_STATE_FIN_WAIT_1:
+      // 判断收到的包是否为 FIN 和 ACK 同时置位
+      if ((tcpHdr->hdrFlags.flags & (TCP_FLAG_FIN | TCP_FLAG_ACK)) == (TCP_FLAG_FIN | TCP_FLAG_ACK)) {
+        // 本应进入 timewait 状态，等待 2msl，这里直接释放
+        closeTcp(tcp);
+      } else if (tcpHdr->hdrFlags.flags & TCP_FLAG_ACK) {
+        // 只收到了 ACK，从 FIN_WAIT_1 转为 FIN_WAIT_2
+        tcp->state = TCP_STATE_FIN_WAIT_2;
+      }
+      break;
+    case TCP_STATE_FIN_WAIT_2:
+      if (tcpHdr->hdrFlags.flags & TCP_FLAG_FIN) {
+        tcp->ack++; // FIN 标志位占一个序号
+        sendTcpTo(tcp, TCP_FLAG_ACK);
+        closeTcp(tcp);
+      }
+      break;
+    case TCP_STATE_LAST_ACK:
+      if (tcpHdr->hdrFlags.flags & TCP_FLAG_ACK) {
+        tcp->handler(tcp, TCP_CONN_CLOSED);
+        closeTcp(tcp);
+      }
       break;
   }
 }
@@ -920,8 +956,18 @@ NetErr listenTcpBlk(TcpBlk *tcp) {
   return NET_ERROR_OK;
 }
 
-NetErr freeTcpBlk(TcpBlk *tcp) {
-  freeTcp(tcp);
+NetErr closeTcp(TcpBlk *tcp) {
+  NetErr err;
+
+  if (tcp->state == TCP_STATE_ESTABLISHED) {
+    err = sendTcpTo(tcp, TCP_FLAG_FIN | TCP_FLAG_ACK);
+    if (err < 0) {
+      return err;
+    }
+    tcp->state = TCP_STATE_FIN_WAIT_1;
+  } else {
+    freeTcp(tcp);
+  }
 
   return NET_ERROR_OK;
 }
