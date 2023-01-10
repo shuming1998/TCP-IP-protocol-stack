@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 static pcap_t *pcap;
-// const char *ipStr = "192.168.2.101";
+// pcap 所用网卡
 const char *ipStr = "192.168.1.7";
 const char selfMacAddr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
 

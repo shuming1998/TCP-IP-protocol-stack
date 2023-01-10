@@ -16,6 +16,7 @@ int main() {
   printf("net running...\n");
   while (1) {
     queryNet();
+    solveHttpQueue();
   }
 
   return 0;

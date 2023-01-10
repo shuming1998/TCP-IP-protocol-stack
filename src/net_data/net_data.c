@@ -186,6 +186,8 @@ static void queryEtherNet(void) {
 
 void initArp(void) {
   arpEntry.state = ARP_ENTRY_FREE;
+  arpEntry.ttl = ARP_CFG_ENTRY_PENDING_TTL;
+  arpEntry.retryCnt = ARP_CFG_MAX_RETRY_TIMES;
 
   // 获取初始时间
   checkArpEntryTtl(&arpTimer, 0);
@@ -306,10 +308,11 @@ void queryArpEntry() {
         break;
       case ARP_ENTRY_PENDING:
         if (--arpEntry.ttl == 0) {                  // 判断 PENDING 状态 arp 包的响应时间是否超时
-          printf("ARP_ENTRY_PENDING: arpEntry.ttl: %d!\n", arpEntry.ttl);
-          if (arpEntry.retryCnt-- == 0) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
+          printf("ARP_ENTRY_PENDING: arpEntry.ttl: %d\n", arpEntry.ttl);
+          if (--arpEntry.retryCnt == 0) {           // 响应时间超时，并且重试次数为 0，直接 free 表项
             printf("ARP PENDING: ttl: 0 & retryCnt: %d\n", arpEntry.retryCnt);
             arpEntry.state = ARP_ENTRY_FREE;
+            arpEntry.retryCnt = ARP_CFG_MAX_RETRY_TIMES;
           } else {                                  // 响应事件超时，且剩余请求次数，尝试重新获取 arp 响应包
             printf("ARP PENDING: ttl: 0 & retryCnt: %d\n", arpEntry.retryCnt);
             arpMakeRequest(&arpEntry.ipAddr);
